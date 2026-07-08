@@ -1,0 +1,23 @@
+# Environment variables
+.venv/
+.env.*
+
+# Python Misc
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Dataset
+datasets/
+processed/
+
+# Training
+# checkpoints/
+# results/
+
+# Jupyter
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# Apple Misc
+.DS_Store
