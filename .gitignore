@@ -6,6 +6,7 @@
 __pycache__/
 *.pyc
 *.egg-info/
+build/
 
 # Dataset
 datasets/
