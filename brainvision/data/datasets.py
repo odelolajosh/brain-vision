@@ -8,7 +8,7 @@ neural networks on preprocessed hyperspectral patient cubes.
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-
+from sklearn.cluster import MiniBatchKMeans
 
 class HSIPixelDataset(Dataset):
     """
@@ -49,35 +49,80 @@ class HSIPatchDataset(Dataset):
 
     def __init__(self, patients: list[dict], patch_size: int = 5):
         assert patch_size % 2 == 1, "patch_size must be odd"
-        self.patch_size = patch_size
-        self.half = patch_size // 2
+        half = patch_size // 2
 
-        self.patches = []
-        self.labels = []
+        patches, labels = [], []   # ← local variables, not self
 
         for p in patients:
-            cube = p["processed"]  # (H, W, C)
-            labels = p["labels"]  # (H, W)
-            H, W, C = cube.shape
+            cube      = p["processed"]
+            label_map = p["labels"]
+            H, W, C   = cube.shape
 
-            # Pad cube spatially so border pixels get full patches
             padded = np.pad(
                 cube,
-                ((self.half, self.half), (self.half, self.half), (0, 0)),
+                ((half, half), (half, half), (0, 0)),
                 mode="reflect",
-            )  # (H+pad, W+pad, C)
+            )
 
-            ys, xs = np.where(labels > 0)  # labelled pixel coords
+            ys, xs = np.where(label_map > 0)
             for y, x in zip(ys, xs):
-                patch = padded[y : y + patch_size, x : x + patch_size, :]  # (P, P, C)
-                self.patches.append(patch.transpose(2, 0, 1))  # (C, P, P)
-                self.labels.append(labels[y, x] - 1)  # 0-indexed
+                patch = padded[y:y+patch_size, x:x+patch_size, :]
+                patches.append(patch.transpose(2, 0, 1))
+                labels.append(label_map[y, x] - 1)
 
-        self.patches = torch.tensor(np.stack(self.patches), dtype=torch.float32)
-        self.labels = torch.tensor(self.labels, dtype=torch.long)
+        self.patches = torch.tensor(np.stack(patches), dtype=torch.float32)
+        self.y       = torch.tensor(labels,            dtype=torch.long)
 
-    def __len__(self):
-        return len(self.patches)
+    def __len__(self):          return len(self.patches)
+    def __getitem__(self, idx): return self.patches[idx], self.y[idx]
 
-    def __getitem__(self, idx):
-        return self.patches[idx], self.labels[idx]
+
+def reduce_training_pixels(dataset: HSIPixelDataset,
+                            n_per_class: int = 1000, n_classes: int = 4, seed: int = 42) -> HSIPixelDataset:
+    """
+    Reduce training pixels to n_per_class per class using K-Means centroids.
+    Follows Fabelo et al. (2023) — 100 clusters per class, n most similar pixels.
+    Balances classes and reduces redundancy.
+    """
+    n_clusters  = 100
+    n_similar   = n_per_class // n_clusters   # pixels per centroid
+    X           = dataset.X.numpy()
+    y           = dataset.y.numpy()
+    keep_idx    = []
+
+    for c in range(n_classes):
+        mask     = y == c
+        X_c      = X[mask]
+        idx_c    = np.where(mask)[0]
+
+        if len(X_c) <= n_per_class:
+            # Not enough pixels — keep all
+            keep_idx.append(idx_c)
+            continue
+
+        # K-Means clustering
+        kmeans   = MiniBatchKMeans(n_clusters=n_clusters,
+                                   random_state=seed,
+                                   n_init=3)
+        kmeans.fit(X_c)
+        centroids = kmeans.cluster_centers_   # (100, 128)
+
+        # For each centroid find n_similar most similar pixels using SAM
+        selected = []
+        for centroid in centroids:
+            # Spectral Angle Mapper — smaller angle = more similar
+            norm_px  = X_c / (np.linalg.norm(X_c, axis=1, keepdims=True) + 1e-6)
+            norm_c   = centroid / (np.linalg.norm(centroid) + 1e-6)
+            angles   = np.arccos(np.clip(norm_px @ norm_c, -1, 1))
+            nearest  = np.argsort(angles)[:n_similar]
+            selected.extend(idx_c[nearest])
+
+        keep_idx.append(np.array(selected[:n_per_class]))
+
+    all_idx     = np.concatenate(keep_idx)
+    dataset.X   = torch.tensor(X[all_idx], dtype=torch.float32)
+    dataset.y   = torch.tensor(y[all_idx], dtype=torch.long)
+
+    print(f"Reduced training set: {len(dataset.X)} pixels "
+          f"({n_per_class} per class x {n_classes} classes)")
+    return dataset

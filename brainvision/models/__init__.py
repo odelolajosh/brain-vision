@@ -11,6 +11,7 @@ Available models:
 """
 
 from brainvision.models.baseline_dnn import Baseline1DDNN
+from brainvision.models.fabelo_dnn import FabeloDNN
 from brainvision.models.hamida_3dcnn import HamidaEtAl3DCNN
 from brainvision.models.hu_1dcnn import HuEtAl1DCNN
 from brainvision.models.hybridsn import HybridSN
@@ -19,6 +20,7 @@ from brainvision.models.spectralformer import SpectralFormer
 
 __all__ = [
     "Baseline1DDNN",
+    "FabeloDNN",
     "HuEtAl1DCNN",
     "LeeEtAl2DCNN",
     "HamidaEtAl3DCNN",

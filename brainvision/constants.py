@@ -37,6 +37,10 @@ CLASS_COLORS       = {
     4: '#888780',   # BG — grey
 }
 
+# ── TRAINING DATA REDUCTION ──────────────────────────────
+REDUCE_PIXELS    = True    # apply K-Means reduction to training set
+N_PIXELS_PER_CLASS = 1000  # pixels per class after reduction
+
 # ── SPLITS ────────────────────────────────────────────────────────────────────
 SPLIT_SEED         = 42       # fix once, never change
 TRAIN_RATIO        = 15       # patients
@@ -72,18 +76,18 @@ DICE_EPS           = 1e-6
 
 
 # ── PATHS ─────────────────────────────────────────────────────────────────────
-DATA_PROCESSED_DIR = "processed"
-CHECKPOINTS_DIR    = "checkpoints"
-RESULTS_DIR        = "results"
+DATA_PROCESSED_DIR = "../processed"
+CHECKPOINTS_DIR    = "../checkpoints"
+RESULTS_DIR        = "../results"
 
 CAMPAIGN_DIRS = {
-    1: "datasets/first_campaign",
-    2: "datasets/second_campaign",
-    3: "datasets/third_campaign",
+    1: "../datasets/first_campaign",
+    2: "../datasets/second_campaign",
+    3: "../datasets/third_campaign",
 }
 
 PROCESSED_DIRS = {
-    1: "processed/first_campaign",
-    2: "processed/second_campaign",
-    3: "processed/third_campaign",
+    1: "../processed/first_campaign",
+    2: "../processed/second_campaign",
+    3: "../processed/third_campaign",
 }

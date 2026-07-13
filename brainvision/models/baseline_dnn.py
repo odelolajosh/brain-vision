@@ -1,6 +1,5 @@
 """
 Baseline 1D Deep Neural Network for HSI classification.
-Fabelo et al. (2023).
 """
 
 import torch.nn as nn
@@ -9,8 +8,6 @@ from torch.nn import init
 
 
 class Baseline1DDNN(nn.Module):
-    """1D-NN: Fully connected DNN. Fabelo et al. (2023)."""
-
     @staticmethod
     def weight_init(m):
         if isinstance(m, nn.Linear):

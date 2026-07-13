@@ -163,3 +163,149 @@ def build_splits_vp3(
 
     print(f"  Test (Campaign 3): {len(test_patients)} images — fixed across all folds")
     return folds
+
+
+def build_splits_fabelo(campaigns: dict[int, list[dict]],
+                        n_folds:   int = 5,
+                        seed:      int = 42) -> list[dict]:
+    """
+    Replicates Fabelo et al. (2023) three-way data partition with 5-fold CV.
+    Leon et al. npj Precision Oncology, 2023.
+
+    - All three campaigns pooled at patient level
+    - Each fold: random 60/20/20 patient-level split
+    - 5 independent folds with different random seeds
+    - Results should be reported as median ± std across folds
+
+    Returns list of 5 fold dicts:
+      [
+        { 'fold': 1, 'train': [...], 'val': [...], 'test': [...] },
+        ...
+      ]
+    """
+    # Pool all patients from all campaigns
+    all_patients = []
+    for campaign_id, patients in campaigns.items():
+        all_patients.extend(patients)
+
+    # Get unique patient IDs
+    patient_ids = sorted(set(p['id'].split('-')[0] for p in all_patients))
+
+    # Build patient → images mapping
+    patient_map = {}
+    for p in all_patients:
+        pid = p['id'].split('-')[0]
+        patient_map.setdefault(pid, []).append(p)
+
+    n          = len(patient_ids)
+    n_test     = max(1, round(n * 0.20))
+    n_val      = max(1, round(n * 0.20))
+    n_train    = n - n_test - n_val
+
+    print(f"Total patients : {n}")
+    print(f"Per fold       : {n_train} train / {n_val} val / {n_test} test patients")
+    print(f"Folds          : {n_folds}\n")
+
+    folds = []
+
+    for fold_idx in range(n_folds):
+        # Each fold uses a different seed — independent random partition
+        rng      = random.Random(seed + fold_idx)
+        shuffled = patient_ids.copy()
+        rng.shuffle(shuffled)
+
+        train_ids = set(shuffled[:n_train])
+        val_ids   = set(shuffled[n_train:n_train + n_val])
+        test_ids  = set(shuffled[n_train + n_val:])
+
+        fold_train = [p for pid in train_ids  for p in patient_map[pid]]
+        fold_val   = [p for pid in val_ids    for p in patient_map[pid]]
+        fold_test  = [p for pid in test_ids   for p in patient_map[pid]]
+
+        folds.append({
+            'fold'  : fold_idx + 1,
+            'train' : fold_train,
+            'val'   : fold_val,
+            'test'  : fold_test,
+        })
+
+        print(f"  Fold {fold_idx+1}: "
+              f"{len(fold_train):2d} train images / "
+              f"{len(fold_val):2d} val images / "
+              f"{len(fold_test):2d} test images  "
+              f"| test patients: {sorted(test_ids)}")
+
+    return folds
+
+
+def build_splits_lopo(campaigns: dict[int, list[dict]],
+                      seed:      int = 42) -> list[dict]:
+    """
+    Leave-One-Patient-Out (LOPO) cross-validation.
+
+    Follows Fabelo et al. (2019) — Sensors, 19(4), 920.
+    https://doi.org/10.3390/s19040920
+
+    - Train+Val pool: Campaign 1 + Campaign 2 (benchmark subset)
+    - Each fold: one patient held out as validation, all others train
+    - Test: Campaign 3 (fixed, held out across all folds)
+    - Number of folds = number of unique patients in C1+C2
+
+    Used specifically for FabeloDNN replication experiments.
+    Results reported as mean ± std across all folds.
+
+    Returns list of fold dicts:
+      [
+        {
+          'fold'        : int,
+          'val_patient' : str,   # patient ID held out e.g. '012'
+          'train'       : [...],
+          'val'         : [...],
+          'test'        : [...],
+        },
+        ...
+      ]
+    """
+    train_val_patients = campaigns[1] + campaigns[2]
+    test_patients      = campaigns[3]
+
+    # Group images by patient
+    patient_map = {}
+    for p in train_val_patients:
+        pid = p['id'].split('-')[0]
+        patient_map.setdefault(pid, []).append(p)
+
+    patient_ids = sorted(patient_map.keys())
+    n_patients  = len(patient_ids)
+
+    print(f"LOPO cross-validation")
+    print(f"  Train+Val pool : Campaign 1 + Campaign 2")
+    print(f"  Unique patients: {n_patients}")
+    print(f"  Folds          : {n_patients}  (one per patient)")
+    print(f"  Test           : Campaign 3 ({len(test_patients)} images, fixed)\n")
+
+    folds = []
+
+    for i, val_pid in enumerate(patient_ids):
+        val_images   = patient_map[val_pid]
+        train_images = [
+            p
+            for pid, images in patient_map.items()
+            if pid != val_pid
+            for p in images
+        ]
+
+        folds.append({
+            'fold'        : i + 1,
+            'val_patient' : val_pid,
+            'train'       : train_images,
+            'val'         : val_images,
+            'test'        : test_patients,
+        })
+
+        print(f"  Fold {i+1:>2} — val patient: {val_pid}  "
+              f"({len(val_images)} images)  "
+              f"train: {len(train_images)} images")
+
+    print(f"\n  Total folds: {len(folds)}")
+    return folds
