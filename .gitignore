@@ -13,8 +13,8 @@ datasets/
 processed/
 
 # Training
-# checkpoints/
-# results/
+checkpoints/
+results/
 
 # Jupyter
 .ipynb_checkpoints/
