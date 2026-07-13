@@ -1,5 +1,5 @@
-# dylos-hsi — Implementation Notes
-**Project**: Dynamic Loss-Driven Hyperspectral Brain Tumour Classification  
+# Dynamic Loss-Driven Hyperspectral Brain Tumour Classification  
+
 **Student**: Joshua Odelola (190407028)  
 **Supervisor**: Prof. Fashanu  
 **Institution**: University of Lagos, Systems Engineering  
