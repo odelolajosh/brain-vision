@@ -7,6 +7,7 @@ neural networks on preprocessed hyperspectral patient cubes.
 
 import numpy as np
 import torch
+import random
 from torch.utils.data import Dataset
 from sklearn.cluster import MiniBatchKMeans
 
@@ -39,42 +40,193 @@ class HSIPixelDataset(Dataset):
 
 class HSIPatchDataset(Dataset):
     """
-    Extracts fixed-size spatial patches centred on each labelled pixel.
-    Used for 2D-CNN and 3D-CNN models that need spatial context.
-
-    Each sample:
-      patch : (C, patch_size, patch_size)  float32  — spectral-spatial patch
-      label : int64                                  — 0-indexed class label
+    Memory-efficient patch dataset — extracts patches on-the-fly
+    rather than pre-storing all patches in memory.
     """
 
-    def __init__(self, patients: list[dict], patch_size: int = 5):
-        assert patch_size % 2 == 1, "patch_size must be odd"
-        half = patch_size // 2
+    def __init__(self, patients:   list[dict],
+                 patch_size:    int  = 7,
+                 balance:       bool = False,
+                 augment:       bool = False,
+                 seed:          int  = 42,
+                 n_classes:     int = 4):
+        assert patch_size % 2 == 1
+        half             = patch_size // 2
+        self.patch_size  = patch_size
+        self.half        = half
+        self.augment     = augment
 
-        patches, labels = [], []   # ← local variables, not self
+        # Store padded cubes in memory (much smaller than patches)
+        # (H+pad, W+pad, C) float32 per patient
+        # e.g. (393, 349, 128) × 4 bytes = ~70 MB per patient
+        # 35 patients × 70 MB = ~2.4 GB — manageable
+        self.padded_cubes = []
+        candidates        = {c: [] for c in range(n_classes)}
 
         for p in patients:
-            cube      = p["processed"]
-            label_map = p["labels"]
-            H, W, C   = cube.shape
+            cube      = p['processed']       # (H, W, C)
+            label_map = p['labels']          # (H, W)
 
-            padded = np.pad(
+            padded    = np.pad(
                 cube,
                 ((half, half), (half, half), (0, 0)),
-                mode="reflect",
-            )
+                mode='reflect'
+            ).astype(np.float32)
+
+            pidx = len(self.padded_cubes)
+            self.padded_cubes.append(padded)
 
             ys, xs = np.where(label_map > 0)
             for y, x in zip(ys, xs):
-                patch = padded[y:y+patch_size, x:x+patch_size, :]
-                patches.append(patch.transpose(2, 0, 1))
-                labels.append(label_map[y, x] - 1)
+                c = int(label_map[y, x]) - 1
+                candidates[c].append((pidx, y, x))
 
-        self.patches = torch.tensor(np.stack(patches), dtype=torch.float32)
-        self.y       = torch.tensor(labels,            dtype=torch.long)
+        # Balance centre pixels if requested
+        if balance:
+            rng       = random.Random(seed)
+            min_count = min(len(v) for v in candidates.values() if v)
+            print(f"  Balancing → {min_count} centres per class")
+            for c in candidates:
+                if len(candidates[c]) > min_count:
+                    candidates[c] = rng.sample(candidates[c], min_count)
 
-    def __len__(self):          return len(self.patches)
-    def __getitem__(self, idx): return self.patches[idx], self.y[idx]
+        # Store only centre pixel coordinates — NOT the patches themselves
+        self.centres = []   # list of (pidx, y, x, label)
+        for c, centres in candidates.items():
+            for (pidx, y, x) in centres:
+                self.centres.append((pidx, y, x, c))
+
+        # Shuffle
+        rng2 = random.Random(seed + 1)
+        rng2.shuffle(self.centres)
+
+        # Extract labels into self.y for compute_class_weights compatibility
+        self.y = torch.tensor([c for _, _, _, c in self.centres], dtype=torch.long)
+
+        print(f"  Lazy dataset: {len(self.centres):,} patches "
+              f"(extracted on-the-fly)")
+
+    def __len__(self):
+        return len(self.centres)
+
+    def __getitem__(self, idx):
+        pidx, y, x, label = self.centres[idx]
+        padded = self.padded_cubes[pidx]
+        p      = self.patch_size
+
+        # Extract patch on-the-fly — (P, P, C) → (C, P, P)
+        patch = padded[y:y+p, x:x+p, :].transpose(2, 0, 1).copy()
+        patch = torch.tensor(patch, dtype=torch.float32)
+
+        if self.augment:
+            if random.random() > 0.5:
+                patch = torch.flip(patch, dims=[2])
+            if random.random() > 0.5:
+                patch = torch.flip(patch, dims=[1])
+            k = random.randint(0, 3)
+            if k > 0:
+                patch = torch.rot90(patch, k=k, dims=[1, 2])
+
+        return patch, torch.tensor(label, dtype=torch.long)
+
+
+class _HSIPatchDataset(Dataset):
+    """
+    Extracts fixed-size spatial patches centred on each labelled pixel.
+    Used for 2D-CNN, 3D-CNN, and HybridSN models.
+
+    Each sample:
+      patch : (C, patch_size, patch_size)  float32
+      label : int64  — 0-indexed (0=NT, 1=TT, 2=BV, 3=BG)
+
+    Args:
+        patients  : list of preprocessed patient dicts
+        patch_size: spatial size of each patch (must be odd)
+        balance   : if True, undersample all classes to minority class count
+                    following Fabelo et al. (2019) random balancing approach.
+                    Applied before patch extraction — only minority-class-sized
+                    subsets of centre pixels are used per class.
+        augment   : if True, apply random flips and rotations on-the-fly
+                    following Fabelo et al. (2019) 800% augmentation.
+                    Should be True for training, False for val/test.
+        seed      : random seed for reproducible balancing
+    """
+
+    def __init__(self, patients:   list[dict],
+                 patch_size:    int  = 7,
+                 balance:       bool = False,
+                 augment:       bool = False,
+                 seed:          int  = 42,
+                 n_classes:     int = 4):
+        assert patch_size % 2 == 1, "patch_size must be odd"
+        half = patch_size // 2
+
+        # Collect all (cube, y, x, label) centre candidates
+        # We collect candidate centre pixels first — before extracting patches
+        # This lets us balance at the centre-pixel level cheaply
+        candidates = {c: [] for c in range(n_classes)}   # class → list of (cube_padded, y, x)
+
+        padded_cubes = []
+        for p in patients:
+            cube      = p['processed']                    # (H, W, C)
+            label_map = p['labels']                       # (H, W)
+            H, W, C   = cube.shape
+
+            padded = np.pad(cube,
+                            ((half, half), (half, half), (0, 0)),
+                            mode='reflect')               # (H+2*half, W+2*half, C)
+            padded_idx = len(padded_cubes)
+            padded_cubes.append(padded)
+
+            ys, xs = np.where(label_map > 0)
+            for y, x in zip(ys, xs):
+                c = int(label_map[y, x]) - 1             # 0-indexed class
+                candidates[c].append((padded_idx, y, x))
+
+        # Balance — undersample to minority class count
+        if balance:
+            rng       = random.Random(seed)
+            min_count = min(len(v) for v in candidates.values() if len(v) > 0)
+            print(f"  Balancing patches → {min_count} centre pixels per class")
+            for c in candidates:
+                if len(candidates[c]) > min_count:
+                    candidates[c] = rng.sample(candidates[c], min_count)
+
+        # Extract patches from selected centres
+        patches, labels = [], []
+        for c, centres in candidates.items():
+            for (pidx, y, x) in centres:
+                padded = padded_cubes[pidx]
+                patch  = padded[y:y+patch_size,
+                                x:x+patch_size, :]        # (P, P, C)
+                patches.append(patch.transpose(2, 0, 1))  # (C, P, P)
+                labels.append(c)
+
+        self.patches   = torch.tensor(np.stack(patches), dtype=torch.float32)
+        self.y         = torch.tensor(labels,            dtype=torch.long)
+        self.augment   = augment
+        self.patch_size = patch_size
+
+    def __len__(self):
+        return len(self.patches)
+
+    def __getitem__(self, idx):
+        patch = self.patches[idx]                          # (C, P, P)
+        label = self.y[idx]
+
+        if self.augment:
+            # Random horizontal flip
+            if random.random() > 0.5:
+                patch = torch.flip(patch, dims=[2])
+            # Random vertical flip
+            if random.random() > 0.5:
+                patch = torch.flip(patch, dims=[1])
+            # Random 90° rotation (0, 90, 180, 270)
+            k = random.randint(0, 3)
+            if k > 0:
+                patch = torch.rot90(patch, k=k, dims=[1, 2])
+
+        return patch, label
 
 
 def reduce_training_pixels(dataset: HSIPixelDataset,

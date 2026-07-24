@@ -309,3 +309,37 @@ def build_splits_lopo(campaigns: dict[int, list[dict]],
 
     print(f"\n  Total folds: {len(folds)}")
     return folds
+
+
+_split_cache = {}
+
+def get_splits(campaigns: dict[int, list[dict]], strategy: str) -> list[dict]:
+    """Build splits for a strategy — cached in memory."""
+    if strategy in _split_cache:
+        return _split_cache[strategy]
+
+    if strategy == 'vp1':
+        s = build_splits_vp1(campaigns)
+        verify_no_leakage(s)
+        splits = [{'fold': None, **s}]
+    elif strategy == 'vp2':
+        s = build_splits_vp2(campaigns)
+        verify_no_leakage(s)
+        splits = [{'fold': None, **s}]
+    elif strategy == 'vp3':
+        splits = build_splits_vp3(campaigns, n_folds=5)
+        for f in splits: verify_no_leakage(f)
+    elif strategy == 'lopo':
+        splits = build_splits_lopo(campaigns)
+        for f in splits: verify_no_leakage(f)
+    elif strategy == 'vp_fabelo':
+        splits = build_splits_fabelo(campaigns, n_folds=5)
+        for f in splits: verify_no_leakage(f)
+    else:
+        raise ValueError(
+                f"Unknown STRATEGY '{strategy}'. "
+                f"Choose 'vp1', 'vp2', 'vp3', 'lopo', or 'vp_fabelo'."
+            )
+
+    _split_cache[strategy] = splits
+    return splits

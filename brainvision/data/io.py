@@ -176,3 +176,30 @@ def load_processed_patients(data_dir: str) -> list[dict]:
         })
     print(f"  Loaded {len(patients):>3} patients from {data_dir}")
     return patients
+
+
+_campaigns_cache: None | dict = None
+
+def load_all_campaigns(processed_dirs: dict, force_reload: bool = False) -> dict:
+    """
+    Load preprocessed patients for all three campaigns.
+    Cached in memory — only loads from disk once per session.
+    Set force_reload=True to reload from disk.
+    """
+    global _campaigns_cache
+
+    if _campaigns_cache is not None and not force_reload:
+        total = sum(len(v) for v in _campaigns_cache.values())
+        print(f"Campaigns loaded from memory cache "
+              f"({total} patients across {len(_campaigns_cache)} campaigns)")
+        return _campaigns_cache
+
+    print("Loading all campaigns from disk...")
+    _campaigns_cache = {
+        c: load_processed_patients(processed_dirs[c])
+        for c in [1, 2, 3]
+    }
+    total = sum(len(v) for v in _campaigns_cache.values())
+    print(f"Loaded {total} patients across "
+          f"{len(_campaigns_cache)} campaigns\n")
+    return _campaigns_cache
