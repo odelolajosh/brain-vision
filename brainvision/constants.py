@@ -64,9 +64,11 @@ MAX_EPOCHS         = 100
 LEARNING_RATE      = 1e-3
 LR_DECAY_FACTOR    = 0.5
 LR_DECAY_PATIENCE  = 5        # epochs before LR decay
-EARLY_STOP_PATIENCE= 15       # epochs before early stopping
+EARLY_STOP_PATIENCE   = 15       # epochs without val F1-noBG improvement
+EARLY_STOP_MIN_EPOCHS = 10       # don't fire train loss criterion before this
+TRAIN_LOSS_DELTA_MIN  = 1e-4     # minimum meaningful train loss change
 DROPOUT_RATE       = 0.5
-PATCH_SIZE = 5
+PATCH_SIZE = 11
 
 # ── LOSS FUNCTIONS ────────────────────────────────────────────────────────────
 FOCAL_GAMMA        = 2.0      # Lin et al. (2018)
