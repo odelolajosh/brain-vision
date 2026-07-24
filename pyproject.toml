@@ -16,6 +16,7 @@ dependencies = [
     "einops>=0.8",
     "torch>=2.0",
     "torchinfo>=1.8",
+    "prettytable>=3.18",
 ]
 
 [project.optional-dependencies]
