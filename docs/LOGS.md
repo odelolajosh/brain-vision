@@ -380,6 +380,13 @@ Next training plan, train all models using a constant configuration:
 - Using vp_fabelo's validation strategy
 - Using Cross Entropy loss function
 
+## 26, JULY 2026
+
+Something is going up with the Fold 4i in Fabelo's VP validation. Besides, I noticed that I might have been depriving the model of more dataset using fabelo_vp method.
+I had different test set for each fold.
+
+> Due to the discrete nature of patient-level splitting with 34 patients, exact 60/20/20 proportions were not achievable. K-Fold cross-validation was applied to the 80% pool (27 patients) to guarantee full coverage, resulting in val sets of 5–6 patients (14.7–17.6% of total) per fold, approximating the target 20% split.
+
 
 ---
 

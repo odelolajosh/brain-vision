@@ -7,7 +7,7 @@ io        : ENVI file loading, zip handling, campaign summaries.
 datasets  : PyTorch Dataset classes for pixel-level and patch-level HSI data.
 """
 
-from brainvision.data.datasets import HSIPatchDataset, HSIPixelDataset
+from brainvision.data.datasets import HSIPatchDataset, HSIPixelDataset, reduce_training_pixels
 from brainvision.data.io import (
     all_campaigns_summary,
     campaign_summary,
@@ -19,12 +19,15 @@ from brainvision.data.io import (
     load_processed_patients,
     print_campaign_summary,
     unzip_patient,
+    load_all_campaigns,
+    
 )
 
 __all__ = [
     # Datasets
     "HSIPixelDataset",
     "HSIPatchDataset",
+    "reduce_training_pixels",
     # I/O
     "unzip_patient",
     "find_envi_pair",
@@ -36,4 +39,5 @@ __all__ = [
     "print_campaign_summary",
     "all_campaigns_summary",
     "load_processed_patients",
+    "load_all_campaigns",
 ]

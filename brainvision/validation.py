@@ -165,75 +165,188 @@ def build_splits_vp3(
     return folds
 
 
+# def build_splits_fabelo(campaigns: dict[int, list[dict]],
+#                         n_folds:   int = 5,
+#                         seed:      int = 42) -> list[dict]:
+#     """
+#     Replicates Fabelo et al. (2023) three-way data partition with 5-fold CV.
+#     Leon et al. npj Precision Oncology, 2023.
+
+#     - All three campaigns pooled at patient level
+#     - Each fold: random 60/20/20 patient-level split
+#     - 5 independent folds with different random seeds
+#     - Results should be reported as median ± std across folds
+
+#     Returns list of 5 fold dicts:
+#       [
+#         { 'fold': 1, 'train': [...], 'val': [...], 'test': [...] },
+#         ...
+#       ]
+#     """
+#     # Pool all patients from all campaigns
+#     all_patients = [p for patients in campaigns.values() for p in patients]
+
+#     # Build patient → images mapping
+#     patient_map = {}
+#     for p in all_patients:
+#         pid = p['id'].split('-')[0]
+#         patient_map.setdefault(pid, []).append(p)
+
+#     patient_ids = sorted(patient_map.keys())
+#     n           = len(patient_ids)
+
+#     # Test set - 20% of n
+#     n_test      = max(1, round(n * 0.20))
+#     rng_test    = random.Random(seed)
+#     shuffled    = patient_ids.copy()
+#     rng_test.shuffle(shuffled)
+
+#     test_ids    = set(shuffled[:n_test])
+#     pool_ids    = shuffled[n_test:]   # remaining 80% — used for train/val
+
+#     test_patients = [p for pid in test_ids for p in patient_map[pid]]
+
+#     n_pool  = len(pool_ids)
+#     n_val   = max(1, round(n_pool * 0.25))   # 25% of 80% = 20% of n
+#     n_train = n_pool - n_val                  # 75% of 80% = 60% of n
+
+#     print(f"Total patients        : {n}")
+#     print(f"Test set (fixed)      : {n_test} patients  "
+#           f"({n_test/n*100:.0f}% of X)  — shared across all folds")
+#     print(f"Pool for train/val    : {n_pool} patients  "
+#           f"({n_pool/n*100:.0f}% of X)")
+#     print(f"Per fold → train      : ~{n_train} patients  "
+#           f"({n_train/n*100:.0f}% of X)")
+#     print(f"Per fold → val        : ~{n_val} patients  "
+#           f"({n_val/n*100:.0f}% of X)")
+#     print(f"Folds                 : {n_folds}\n")
+
+#     # Build folds — each reshuffles the 80% pool independently
+#     folds = []
+
+#     for fold_idx in range(n_folds):
+#         # Independent seed per fold — different train/val partition each time
+#         rng      = random.Random(seed + fold_idx + 1)
+#         shuffled_pool = pool_ids.copy()
+#         rng.shuffle(shuffled_pool)
+
+#         val_ids   = set(shuffled_pool[:n_val])
+#         train_ids = set(shuffled_pool[n_val:])
+
+#         fold_train = [p for pid in train_ids for p in patient_map[pid]]
+#         fold_val   = [p for pid in val_ids   for p in patient_map[pid]]
+
+#         folds.append({
+#             'fold'  : fold_idx + 1,
+#             'train' : fold_train,
+#             'val'   : fold_val,
+#             'test'  : test_patients,   # ← same for every fold
+#         })
+
+#         print(f"  Fold {fold_idx+1}: "
+#               f"train={len(fold_train):2d} images "
+#               f"({len(train_ids)} patients)  "
+#               f"val={len(fold_val):2d} images "
+#               f"({len(val_ids)} patients)  "
+#               f"test={len(test_patients):2d} images "
+#               f"({n_test} patients, fixed)")
+
+#     print(f"\n  Test patients: {sorted(test_ids)}")
+#     return folds
+
+
 def build_splits_fabelo(campaigns: dict[int, list[dict]],
                         n_folds:   int = 5,
                         seed:      int = 42) -> list[dict]:
     """
     Replicates Fabelo et al. (2023) three-way data partition with 5-fold CV.
-    Leon et al. npj Precision Oncology, 2023.
 
-    - All three campaigns pooled at patient level
-    - Each fold: random 60/20/20 patient-level split
-    - 5 independent folds with different random seeds
-    - Results should be reported as median ± std across folds
+    Structure:
+      - All three campaigns pooled at patient level
+      - 20% of patients held out as a FIXED test set across all folds
+      - Remaining 80% split into n_folds using K-Fold CV
+      - K-Fold guarantees every pool patient appears in val exactly once
+      - This gives approximately 60/20/20 of total X per fold:
+          Train : (n_folds-1)/n_folds × 80% ≈ 60% of X
+          Val   :          1/n_folds  × 80% ≈ 20% of X  (with n_folds=5)
+          Test  : 20% of X  (fixed, identical across all folds)
 
-    Returns list of 5 fold dicts:
-      [
-        { 'fold': 1, 'train': [...], 'val': [...], 'test': [...] },
-        ...
-      ]
+    Args:
+        campaigns : dict mapping campaign_id → list of patient dicts
+        n_folds   : number of cross-validation folds (default 5)
+        seed      : random seed for test set selection and K-Fold shuffle
+
+    Returns list of fold dicts, each with:
+      {
+        'fold'  : int,
+        'train' : list[dict],
+        'val'   : list[dict],
+        'test'  : list[dict],   ← identical across all folds
+      }
     """
-    # Pool all patients from all campaigns
-    all_patients = []
-    for campaign_id, patients in campaigns.items():
-        all_patients.extend(patients)
+    from sklearn.model_selection import KFold
 
-    # Get unique patient IDs
-    patient_ids = sorted(set(p['id'].split('-')[0] for p in all_patients))
+    # ── Pool all patients ─────────────────────────────────────────────────────
+    all_patients = [p for patients in campaigns.values() for p in patients]
 
-    # Build patient → images mapping
     patient_map = {}
     for p in all_patients:
         pid = p['id'].split('-')[0]
         patient_map.setdefault(pid, []).append(p)
 
-    n          = len(patient_ids)
-    n_test     = max(1, round(n * 0.20))
-    n_val      = max(1, round(n * 0.20))
-    n_train    = n - n_test - n_val
+    patient_ids = sorted(patient_map.keys())
+    n           = len(patient_ids)
 
-    print(f"Total patients : {n}")
-    print(f"Per fold       : {n_train} train / {n_val} val / {n_test} test patients")
-    print(f"Folds          : {n_folds}\n")
+    # ── Carve out fixed test set — 20% of X ──────────────────────────────────
+    n_test   = max(1, round(n * 0.20))
+    rng      = random.Random(seed)
+    shuffled = patient_ids.copy()
+    rng.shuffle(shuffled)
 
+    test_ids      = set(shuffled[:n_test])
+    pool_ids      = np.array(sorted(set(shuffled[n_test:])))
+    test_patients = [p for pid in test_ids for p in patient_map[pid]]
+
+    n_pool = len(pool_ids)
+
+    print(f"Total patients        : {n}")
+    print(f"Test set (fixed)      : {n_test} patients  "
+          f"({n_test/n*100:.0f}% of X)  — shared across all folds")
+    print(f"Pool for K-Fold CV    : {n_pool} patients  "
+          f"({n_pool/n*100:.0f}% of X)")
+    print(f"K-Fold                : {n_folds} folds  "
+          f"(every pool patient appears in val exactly once)")
+    print(f"Per fold → train      : ~{n_pool*(n_folds-1)//n_folds} patients  "
+          f"({n_pool*(n_folds-1)/n_folds/n*100:.0f}% of X)")
+    print(f"Per fold → val        : ~{n_pool//n_folds} patients  "
+          f"({n_pool//n_folds/n*100:.0f}% of X)")
+    print(f"Test patients         : {sorted(test_ids)}\n")
+
+    # ── K-Fold on pool — guarantees full coverage ─────────────────────────────
+    kf    = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
     folds = []
 
-    for fold_idx in range(n_folds):
-        # Each fold uses a different seed — independent random partition
-        rng      = random.Random(seed + fold_idx)
-        shuffled = patient_ids.copy()
-        rng.shuffle(shuffled)
+    for fold_idx, (train_idx, val_idx) in enumerate(kf.split(pool_ids)):
+        train_ids = set(pool_ids[train_idx])
+        val_ids   = set(pool_ids[val_idx])
 
-        train_ids = set(shuffled[:n_train])
-        val_ids   = set(shuffled[n_train:n_train + n_val])
-        test_ids  = set(shuffled[n_train + n_val:])
-
-        fold_train = [p for pid in train_ids  for p in patient_map[pid]]
-        fold_val   = [p for pid in val_ids    for p in patient_map[pid]]
-        fold_test  = [p for pid in test_ids   for p in patient_map[pid]]
+        fold_train = [p for pid in train_ids for p in patient_map[pid]]
+        fold_val   = [p for pid in val_ids   for p in patient_map[pid]]
 
         folds.append({
             'fold'  : fold_idx + 1,
             'train' : fold_train,
             'val'   : fold_val,
-            'test'  : fold_test,
+            'test'  : test_patients,    # ← fixed across all folds
         })
 
         print(f"  Fold {fold_idx+1}: "
-              f"{len(fold_train):2d} train images / "
-              f"{len(fold_val):2d} val images / "
-              f"{len(fold_test):2d} test images  "
-              f"| test patients: {sorted(test_ids)}")
+              f"train={len(fold_train):2d} images "
+              f"({len(train_ids):2d} pts)  "
+              f"val={len(fold_val):2d} images "
+              f"({len(val_ids):2d} pts)  "
+              f"test={len(test_patients):2d} images "
+              f"({n_test} pts, fixed)")
 
     return folds
 

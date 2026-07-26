@@ -1,3 +1,8 @@
+import os
+import torch
+import random
+import numpy as np
+
 def build_run_name(model:          str,
                    loss_fn:        str,
                    strategy:       str,
@@ -38,3 +43,13 @@ def build_run_name(model:          str,
         fold_label = strategy_tag
 
     return f"{model_tag}_{loss_tag}_{balance_tag}_{fold_label}"
+
+
+def seed_everything(seed=42):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False

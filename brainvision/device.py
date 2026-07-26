@@ -120,3 +120,13 @@ def print_device_info(device: torch.device | None = None):
     print(f"  Memory     : {_mb(info['memory_total'])} total  "
           f"| {_mb(info['memory_free'])} free  "
           f"| {_mb(info['memory_used'])} used")
+
+
+def supports_pin_memory(device: torch.device | None = None) -> bool:
+    """
+    Returns True only for CUDA devices.
+    pin_memory is not supported on MPS or CPU.
+    """
+    if device is None:
+        device = get_device()
+    return str(device).startswith('cuda')
