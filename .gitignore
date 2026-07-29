@@ -14,7 +14,7 @@ processed/
 
 # Training
 checkpoints/
-results/
+results/*.npy
 
 # Jupyter
 .ipynb_checkpoints/
