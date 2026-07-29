@@ -89,8 +89,8 @@ def load_patient(zip_path: str, cleanup: bool = False) -> dict:
         "dark": dark,
         "white": white,
         "labels": labels,
-        "image": folder / "image.jpg",
-        "gt_map": folder / "gtMap.jpg",
+        "image"  : None if cleanup else folder / "image.jpg",
+        "gt_map" : None if cleanup else folder / "gtMap.jpg",
     }
 
 
