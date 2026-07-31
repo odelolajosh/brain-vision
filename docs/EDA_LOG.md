@@ -813,7 +813,7 @@ Next step: 04_eda_campaign.ipynb
 
 ### Finding 04-A — NT is the most acquisition-stable class
 
-Plot: `plot_mean_spectra_per_campaign` (NT panel)
+Plot: [plot_mean_spectra_per_campaign](../results/campaign_mean_spectra.png) (NT panel)
 
 C1, C2, C3 NT mean curves overlap tightly across the full spectrum.
 Visible range (bands 0–40): all three nearly identical.
@@ -832,31 +832,27 @@ challenge — the classification difficulty is concentrated in TT.
 
 ### Finding 04-B — TT shows clinically significant inter-campaign drift
 
-Plot: `plot_mean_spectra_per_campaign` (TT panel)
+Plot: [plot_mean_spectra_per_campaign](../results/campaign_mean_spectra.png) (TT panel)
 
-C1 TT has a systematically different spectral shape from C2 and C3:
-  Visible range (bands 0–40)  : C1 sits ABOVE C2 and C3
-  NIR range    (bands 60–128) : C1 sits BELOW C2 and C3
+C3 TT has a systematically different spectral shape from C1 and C2:
+  Visible range (bands 0–40)  : C3 sits BELOW C1 and C2
+  NIR range    (bands 60–128) : C3 sits ABOVE C1 and C2
 
-This means C1 TT has higher visible reflectance AND lower NIR
-reflectance than C2/C3 TT — a shape difference that cannot be
-corrected by per-pixel normalisation (which only adjusts amplitude).
+C1 (blue) and C2 (orange) track closely together across the full
+spectrum. C3 (green) is the outlier — lower visible reflectance
+and higher NIR reflectance than C1/C2 TT. This is a spectral shape
+difference that cannot be corrected by per-pixel normalisation
+(which only adjusts amplitude, not shape).
 
 C3 TT std band is very wide — TT in C3 is highly heterogeneous,
 reflecting diverse tumour grades (G1–G4) and secondary tumours
 in the C3 cohort.
 
-**Direct link to fold performance**: Fold 1 has 8 C1 val patients.
-When a model trained on C2/C3-dominated training sets evaluates on
-C1 TT pixels, it encounters TT spectra that don't match the TT
-signature it learned — causing TT misclassification and low
-fold 1 F1-noBG (59.6% for 1D-CNN × UFL).
-
 ---
 
 ### Finding 04-C — Inter-campaign spectral drift quantified per class
 
-Plot: `plot_spectral_drift`
+Plot: [plot_spectral_drift](../results/campaign_spectral_drift.png)
 
 Mean absolute spectral drift |mean_Ca - mean_Cb| per band, averaged
 across all 128 bands:
@@ -890,7 +886,7 @@ consistent with artery/vein proportion varying across campaigns.
 
 ### Finding 04-D — Campaign 1 NT/TT most spectrally similar (SAM=2.00°)
 
-Plot: `plot_nt_tt_separability_per_campaign`
+Plot: [plot_nt_tt_separability_per_campaign](../results/campaign_nt_tt_separability.png)
 
 Per-campaign NT vs TT spectral angle (SAM):
 
@@ -906,13 +902,6 @@ indistinguishable with heavily overlapping std bands throughout.
 
 C2 and C3 show progressively clearer NT/TT separation — the gap
 between mean curves is visible in NIR (bands 60–100).
-
-**Note on fold-level vs campaign-level SAM**: Fold 1 (8 C1 val
-patients) had SAM=6.88° in the fold EDA — apparently contradicting
-C1's campaign SAM=2.00°. The fold-level SAM is computed across all
-tissue types in the val set (not just NT vs TT), while campaign SAM
-is specifically NT vs TT within-campaign. These measure different
-things and are both valid.
 
 **Key implication**: C1 presents the hardest NT/TT classification
 challenge because its NT and TT spectra are most similar. Models
@@ -937,7 +926,7 @@ discrimination boundary is narrower.
 
 ### Finding 04-E — PCA of TT spectra shows partial campaign clustering
 
-Plot: `plot_pca_campaign_clustering` (TT class)
+Plot: [plot_pca_campaign_clustering](../results/campaign_pca_tumour.png) (TT class)
 
 PCA variance explained: PC1=41.6%, PC2=27.3%, PC3=15.7% (total=84.6%)
 
@@ -959,7 +948,7 @@ with the campaign-specific offsets, particularly C1 vs C3.
 
 ### Finding 04-F — PCA of NT spectra shows unexpected C2 isolation
 
-Plot: `plot_pca_campaign_clustering` (NT class)
+Plot: [plot_pca_campaign_clustering](../results/campaign_pca_normal.png) (NT class)
 
 PCA variance explained: PC1=45.2%, PC2=31.4%, PC3=9.3% (total=85.9%)
 
@@ -983,7 +972,7 @@ apart (2015–2019). C2 is the outlier for NT in PCA space.
 
 ### Finding 04-G — Image-level statistics quantify campaign labelling differences
 
-Plot: `plot_image_level_stats`
+Plot: [plot_image_level_stats](../results/campaign_image_stats.png)
 Table: campaign summary output
 
 **Image size** (median H×W pixels):
@@ -1021,31 +1010,36 @@ Full campaign characterisation:
 | TT intra-var | 0.1040 | 0.0958 | **0.0711** |
 | Median TT px/image | 0 | 345 | 908 |
 
-**Campaign 3 is the most TT-favourable campaign**:
+**Campaign 3 is the most TT-rich but spectrally most distinct**:
 - Highest TT pixel % (5.80%)
 - Most balanced NT:TT ratio (1.4:1)
 - Most TT-rich per image (908 px median)
 - Lowest TT intra-class variance (0.0711) — most consistent TT
 - Most distinct NT vs TT separation (SAM=4.06°)
+- TT is the spectral OUTLIER — C3 TT depressed visible,
+  elevated NIR vs C1/C2 (Finding 04-B)
+- Models trained on C1/C2 data encounter C3 TT as a
+  distribution shift when evaluating on C3-heavy folds
 
 **Campaign 1 is the most TT-challenging campaign**:
 - Only 33% images have TT
 - Median TT per image = 0
-- Most similar NT/TT spectra (SAM=2.00°)
+- Most similar NT/TT spectra (SAM=2.00°) — hardest to classify
 - Highest TT intra-class variance (0.1040) — least consistent TT
-- Largest TT spectral drift vs C3 (0.0757)
+- C1 and C2 TT track closely together spectrally
 
 **Campaign 2 has the most severe NT:TT imbalance** (16.3:1) —
 despite 71% of images having TT, those TT regions are very small
-(median 345 px) relative to large NT regions.
+(median 345 px) relative to large NT regions. C2 TT tracks
+closely with C1 TT spectrally — the two campaigns are most
+compatible for cross-campaign generalisation.
 
 **For training**: The fixed test set (20% of patients) draws from
-all three campaigns. Because C3 is the most TT-favourable and
-C1 the most challenging, the test set composition critically
-affects reported TT sensitivity. Models evaluated on C1-heavy
-test partitions will appear worse than those evaluated on
-C3-heavy partitions — not due to model quality but due to
-the inherent difficulty difference between campaigns.
+all three campaigns. C3's TT spectral drift means models trained
+on C1/C2-dominated data face a distribution shift when predicting
+C3 TT pixels. C1's small NT/TT SAM (2.00°) means C1-heavy folds
+are inherently harder to classify regardless of training data
+composition. Both effects independently challenge generalisation.
 
 ---
 
@@ -1054,7 +1048,7 @@ the inherent difficulty difference between campaigns.
 | Finding | Key result |
 |---|---|
 | 04-A | NT most stable — drift 0.010–0.024 |
-| 04-B | C1 TT elevated visible, depressed NIR vs C2/C3 |
+| 04-B | C3 TT depressed visible, elevated NIR vs C1/C2 — C3 is spectral outlier |
 | 04-C | TT C1 vs C3 drift=0.0757 (largest tissue drift) |
 | 04-D | C1 SAM=2.00° — NT/TT hardest to separate in C1 |
 | 04-E | TT PCA: partial campaign clustering (real but not catastrophic) |
@@ -1064,8 +1058,6 @@ the inherent difficulty difference between campaigns.
 
 **Campaign EDA status: COMPLETE ✅**
 Next step: 05_eda_folds.ipynb
-
----
 
 ---
 
@@ -1126,62 +1118,45 @@ Fold 5: most C2-heavy (5 C2 val patients), highest NT:TT (17.5),
 
 ### Finding 05-D — Fold 1 NT/TT visible-range separation explained
 
-Plot: `plot_nt_tt_spectra_per_fold` (fold 1)
+Plot: [plot_nt_tt_spectra_per_fold](../results/fold_nt_tt_spectra.png) (fold 1)
 
 Fold 1 shows the most dramatic NT/TT separation in bands 0–40
-(visible range, ~440–580nm) of any fold. NT (green) sits
-significantly above TT (red) in the visible range. This is NOT
-a sign of easier classification — it reflects C1 TT spectral
-drift identified in Finding 04-B:
+(visible range, ~440–580nm) of any fold. Uniquely, TT (red) sits
+ABOVE NT (green) in the visible range — the reverse of the global
+class ordering seen in the processed class spectra (Finding 03-E).
+In the NIR (bands 60–128) both curves converge and NT rises
+marginally above TT as expected.
 
-C1 TT has systematically LOWER visible reflectance than C1 NT.
-Fold 1's 8 C1 val patients expose this drift — the TT pixels
-the model encounters in validation have a different visible-range
-signature from the TT signature learned during training
-(which is a mix of C1/C2/C3 training patients).
+**Why TT sits above NT in fold 1's visible range:**
+Fold 1's val set contains 8 C1 patients — and C1 has very few TT
+pixels (median ~0 per image). The TT pixels that do exist in C1
+come from a very small number of patients whose tumour regions
+happen to have higher visible reflectance than the C1 NT pixels
+in this particular val partition. With so few TT pixels in C1,
+this small subset dominates the fold 1 TT mean spectrum, pulling
+it above NT in the visible range.
 
-The large SAM=6.88° for fold 1 is CAUSED BY this campaign-level
-drift, not by genuine NT/TT biological separability. This is the
-key distinction: fold 1 has high SAM° because C1's TT spectra
-are offset from the training distribution, not because C1's
-tissue types are more biologically distinct.
+Note: this is distinct from the C3 TT campaign drift (Finding
+04-B) where C3 TT is depressed in visible vs C1/C2 TT. Here
+the reversal is within C1 — C1 TT above C1 NT in the visible
+range — caused by the extreme sparsity of C1 TT pixels making
+the fold-level mean unrepresentative.
 
----
+This reversal is a direct consequence of C1 TT sparsity — the
+fold 1 TT mean is not representative of TT in general but of
+the specific few TT-containing C1 patients in this val partition.
 
-### Finding 05-E — Fold complexity vs F1 correlations
-
-Plot: `plot_complexity_vs_performance`
-Model: 1D-CNN × UFL × bal × vp_fabelo
-
-| Metric | Correlation with F1-noBG | Direction | Interpretation |
-|---|---|---|---|
-| SAM° (NT vs TT) | r = −0.758 | Negative | Higher SAM → lower F1 |
-| TT pixel % | r = +0.476 | Positive | More TT → higher F1 |
-| NT:TT ratio | r = +0.430 | Positive | More imbalanced → higher F1 (paradox) |
-
-**SAM° is the strongest predictor** of fold difficulty (r=−0.758).
-But as established in Finding 05-D, fold 1's high SAM is caused
-by campaign-level acquisition drift, not biological separability.
-The true predictor is campaign composition — folds dominated by
-C1 val patients are harder because C1 TT spectra are offset from
-the training distribution.
-
-**TT pixel % correlation (r=0.476)** — more TT pixels in val
-means more stable F1 metric. With very few TT pixels, individual
-misclassifications swing the metric dramatically. Fold 1's
-near-zero median TT makes its F1 estimate highly unreliable.
-
-**NT:TT ratio paradox (r=0.430)** — higher imbalance correlates
-with better F1. Explained by the nature of TT regions: folds with
-high NT:TT (folds 3 and 5) have small, well-defined tumour regions
-that the model classifies reliably. Folds with low NT:TT have
-larger, more heterogeneous TT regions that are harder to classify
-consistently. Tumour size and spatial consistency matter as much
-as pixel count.
+The large SAM=6.88° for fold 1 reflects this population-level
+reversal — NT and TT means are most angularly separated because
+they have swapped their typical ordering in the visible range.
+However the ±1 std bands overlap heavily throughout, and the
+within-campaign SAM for C1 is only 2.00° (Finding 04-D) —
+confirming that within individual C1 patients, NT and TT are
+actually the most similar of any campaign.
 
 ---
 
-### Finding 05-F — Fold 3 TT intra-variance highest (0.1170)
+### Finding 05-E — Fold 3 TT intra-variance highest (0.1170)
 
 Fold 3 has the widest TT std band of any fold — TT pixels in
 fold 3's val set are the most spectrally heterogeneous (0.1170
@@ -1214,103 +1189,3 @@ patients encounter TT spectra closer to the training distribution
 and achieve higher F1.
 
 **Fold EDA status: COMPLETE ✅**
-
----
-
-### Finding 05-G — Per-fold conclusions
-
-**Fold 1 — Hardest fold, for the wrong reason**
-```
-SAM=6.88°  NT:TT=4.5  TT%=3.2%  C1=8  C2=3  C3=1
-F1-noBG: 59.6% (1D-CNN × UFL)
-```
-Consistently underperforms across every model and loss function.
-High SAM is caused by C1 TT acquisition drift, not biological
-separability — 8 C1 val patients bring TT spectra systematically
-offset from the training distribution (elevated visible, depressed
-NIR). Low TT pixel count makes the F1 metric itself unreliable.
-Fold 1 is not just the hardest fold — it is also the noisiest
-estimate of true model performance.
-
-**Fold 2 — Best fold, for the right reason**
-```
-SAM=2.97°  NT:TT=5.3  TT%=4.6%  C1=5  C2=4  C3=2
-F1-noBG: 73.9% (1D-CNN × UFL)
-```
-Most balanced across every dimension — campaign composition, TT
-pixel count, and NT:TT ratio. Mixed campaign val set (5 C1, 4 C2,
-2 C3) means val patients are representative of the training
-distribution — no systematic spectral offset. Low SAM (2.97°)
-with narrow std bands gives a consistent and learnable decision
-boundary. Fold 2 gives the most reliable estimate of true model
-generalisation.
-
-**Fold 3 — Hard for a different reason**
-```
-SAM=3.79°  NT:TT=13.9  TT%=2.9%  C1=4  C2=2  C3=1
-F1-noBG: 70.3% (1D-CNN × UFL)  best epoch=3
-```
-Difficulty comes from TT heterogeneity rather than campaign drift.
-Highest TT intra-class variance of any fold (0.1170). Model peaks
-at epoch 3 and never recovers — finds a decision boundary that
-works for some TT subtypes but cannot generalise across the full
-TT spectral range in this val set. High NT:TT ratio (13.9) means
-very few TT pixels, compounding instability.
-
-**Fold 4 — The cross-campaign test**
-```
-SAM=3.42°  NT:TT=4.4  TT%=3.5%  C1=0  C2=2  C3=5
-F1-noBG: 69.6% (1D-CNN × UFL)
-```
-Only fold with zero C1 val patients. Five C3 val patients make it
-the most cross-campaign test — C3 images are 2.5–4 years newer
-with different surgical setups. Despite this the model achieves
-69.6% — C3 TT is more compatible with the training distribution
-than C1 TT. Nearly identical NT/TT curves (low SAM) mean the
-model works from very subtle spectral differences.
-
-**Fold 5 — The imbalance outlier**
-```
-SAM=5.42°  NT:TT=17.5  TT%=3.4%  C1=4  C2=5  C3=0
-F1-noBG: 72.8% (1D-CNN × UFL)
-```
-Most severe NT:TT imbalance (17.5:1) yet second best result.
-Explains the NT:TT paradox from Finding 05-E — TT regions are
-small and well-defined (compact C2 tumour regions), classified
-reliably despite scarcity. Five C2 val patients bring consistent
-TT signatures compatible with the training distribution. No C3
-patients means no C3-specific acquisition variability.
-
-**Unified conclusion**:
-Fold performance ranking is almost entirely explained by campaign
-composition rather than class imbalance or spectral separability:
-
-| Rank | Fold | F1-noBG | Campaign profile |
-|---|---|---|---|
-| 1st | 2 | 73.9% | Mixed — all campaigns represented |
-| 2nd | 5 | 72.8% | C2-heavy — spectrally compatible |
-| 3rd | 3 | 70.3% | Mostly C1/C2 — TT heterogeneity |
-| 4th | 4 | 69.6% | C3-heavy — cross-campaign gap |
-| 5th | 1 | 59.6% | C1-heavy — acquisition drift |
-
-Random patient-level K-Fold on this dataset does NOT produce IID
-folds — campaign of origin introduces systematic bias making some
-folds structurally harder independent of model quality or loss
-function. This argues for campaign-stratified cross-validation
-as a future work recommendation.
-
----
-
-## EDA Progress Summary
-
-| Notebook | Status | Key finding |
-|---|---|---|
-| 01_eda_raw | ✅ COMPLETE | TT=4.1% globally, 33/61 images TT-free |
-| 02_preprocessing | ✅ COMPLETE | All 61 patients verified [0,1] float32 |
-| 03_eda_processed | ✅ COMPLETE | 108/128 bands significant, NT>TT throughout |
-| 04_eda_campaign | ✅ COMPLETE | C1 TT drift, C3 most TT-favourable |
-| 05_eda_folds | ✅ COMPLETE | Campaign composition drives fold difficulty |
-
-**All EDA notebooks complete. Ready for training experiments.**
-
----
