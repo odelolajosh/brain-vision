@@ -56,7 +56,11 @@ echo
 # ── Collect all checkpoints if requested ──────────────────────────────────────
 if $ALL_CHECKPOINTS; then
     [[ -d "checkpoints" ]] || error "checkpoints/ directory not found."
-    mapfile -t EXTRA < <(find checkpoints -name "*.pt" | sort)
+    # Portable alternative to `mapfile` (bash 4+ only; macOS ships bash 3.2)
+    EXTRA=()
+    while IFS= read -r _ckpt; do
+        [[ -n "$_ckpt" ]] && EXTRA+=("$_ckpt")
+    done < <(find checkpoints -name "*.pt" | sort)
     CHECKPOINTS+=(${EXTRA[@]+"${EXTRA[@]}"})
     info "Found ${#EXTRA[@]} checkpoint(s) in checkpoints/"
 fi
@@ -83,81 +87,106 @@ $SSH_CMD $SSH_OPTS "$SSH_TARGET" \
     "mkdir -p ${REMOTE_CKPT_DIR} ${REMOTE_PROCESSED_DIR} ${REMOTE_DATASETS_DIR}"
 success "Remote asset directories ready"
 
-# ── Helper: safe copy with size check and overwrite guard ────────────────────
-copy_asset() {
-    local local_path="$1"
-    local remote_dir="$2"
-    local label="$3"
+# ── Helper: batch copy many files in ONE rsync connection ────────────────────
+# Copying files one-by-one with scp opens a new SSH connection per file, which
+# trips sshd's MaxStartups limit after ~10 rapid connections ("Permission
+# denied"). rsync moves the whole set over a single connection instead.
+copy_batch() {
+    local remote_dir="$1"; shift
+    local label="$1";      shift
+    local files=("$@")
 
-    [[ -f "$local_path" ]] || { warn "File not found: $local_path — skipping"; return; }
+    [[ ${#files[@]} -gt 0 ]] || return
 
-    local filename
-    filename="$(basename "$local_path")"
-    local size_mb
-    size_mb=$(du -m "$local_path" | cut -f1)
+    # Filter out anything missing locally
+    local present=()
+    local f
+    for f in "${files[@]}"; do
+        if [[ -f "$f" ]]; then present+=("$f")
+        else warn "File not found: $f — skipping"; fi
+    done
+    [[ ${#present[@]} -gt 0 ]] || return
 
-    # Check if file already exists on Pi
-    local exists
-    exists=$($SSH_CMD $SSH_OPTS "$SSH_TARGET" \
-        "[ -f '${remote_dir}/${filename}' ] && echo yes || echo no")
-
-    if [[ "$exists" == "yes" ]] && ! $FORCE && ! $DRY_RUN; then
-        echo -ne "  ${YELLOW}${filename}${NC} already exists on Pi. Overwrite? [y/N] "
-        read -r answer
-        [[ "$answer" =~ ^[Yy]$ ]] || { info "Skipping ${filename}"; return; }
-    fi
+    local total_mb
+    total_mb=$(du -ch "${present[@]}" 2>/dev/null | tail -1 | cut -f1)
 
     if $DRY_RUN; then
-        info "[dry-run] Would copy ${label}: ${local_path} → ${remote_dir}/ (${size_mb} MB)"
+        info "[dry-run] Would copy ${#present[@]} ${label}(s) (${total_mb}) → ${remote_dir}/"
         return
     fi
 
-    info "Copying ${label}: ${filename} (${size_mb} MB)…"
-    $SCP_CMD -p $SCP_OPTS "$local_path" "${SSH_TARGET}:${remote_dir}/${filename}"
-    success "${filename} → ${remote_dir}/"
+    local update_flag=()
+    if ! $FORCE; then
+        # Without --force, skip files already present and newer/identical on Pi
+        update_flag=(--ignore-existing)
+        info "Existing files on the Pi will be kept (use --force to overwrite)"
+    fi
+
+    info "Copying ${#present[@]} ${label}(s), ${total_mb} total…"
+    # NOTE: --progress (not --info=progress2) for compatibility with the
+    # rsync 2.6.9 / openrsync that ships with macOS.
+    $RSYNC_CMD -az --progress \
+        ${update_flag[@]+"${update_flag[@]}"} \
+        -e "$SSH_CMD $SSH_OPTS" \
+        "${present[@]}" \
+        "${SSH_TARGET}:${remote_dir}/"
+    success "${#present[@]} ${label}(s) → ${remote_dir}/"
 }
 
 # ── Copy checkpoints ──────────────────────────────────────────────────────────
 if [[ ${#CHECKPOINTS[@]} -gt 0 ]]; then
     step "Copying ${#CHECKPOINTS[@]} checkpoint(s)"
-    for ckpt in "${CHECKPOINTS[@]}"; do
-        copy_asset "$ckpt" "$REMOTE_CKPT_DIR" "checkpoint"
-    done
+    copy_batch "$REMOTE_CKPT_DIR" "checkpoint" "${CHECKPOINTS[@]}"
 fi
 
-# ── Helper: resolve campaign subdir ──────────────────────────────────────────
-campaign_subdir() {
-    local path="$1"
-    local base="$2"
-    if [[ "$path" == *"first_campaign"* ]];  then echo "${base}/first_campaign"
-    elif [[ "$path" == *"second_campaign"* ]]; then echo "${base}/second_campaign"
-    elif [[ "$path" == *"third_campaign"* ]];  then echo "${base}/third_campaign"
-    else echo "${base}"
-    fi
+# ── Helper: batch-copy images, grouped by campaign ───────────────────────────
+copy_images() {
+    local base_dir="$1"; shift
+    local label="$1";    shift
+    local images=("$@")
+
+    [[ ${#images[@]} -gt 0 ]] || return
+
+    # Group by campaign so each campaign is a single rsync transfer
+    local campaign sub group img
+    for campaign in first_campaign second_campaign third_campaign _other; do
+        group=()
+        for img in "${images[@]}"; do
+            if [[ "$campaign" == "_other" ]]; then
+                [[ "$img" != *first_campaign*   && \
+                   "$img" != *second_campaign*  && \
+                   "$img" != *third_campaign*   ]] && group+=("$img")
+            elif [[ "$img" == *"${campaign}"* ]]; then
+                group+=("$img")
+            fi
+        done
+        [[ ${#group[@]} -gt 0 ]] || continue
+
+        if [[ "$campaign" == "_other" ]]; then
+            sub="${base_dir}"
+        else
+            sub="${base_dir}/${campaign}"
+        fi
+
+        if ! $DRY_RUN; then
+            $SSH_CMD $SSH_OPTS "$SSH_TARGET" "mkdir -p ${sub}"
+        fi
+        copy_batch "$sub" "$label" "${group[@]}"
+    done
 }
 
 # ── Copy preprocessed images (.npz from processed/) ──────────────────────────
 if [[ ${#PROCESSED_IMAGES[@]} -gt 0 ]]; then
     step "Copying ${#PROCESSED_IMAGES[@]} preprocessed image(s) → processed/"
-    for img in ${PROCESSED_IMAGES[@]+"${PROCESSED_IMAGES[@]}"}; do
-        remote_subdir=$(campaign_subdir "$img" "${REMOTE_PROCESSED_DIR}")
-        if ! $DRY_RUN; then
-            $SSH_CMD $SSH_OPTS "$SSH_TARGET" "mkdir -p ${remote_subdir}"
-        fi
-        copy_asset "$img" "$remote_subdir" "preprocessed image"
-    done
+    copy_images "$REMOTE_PROCESSED_DIR" "preprocessed image" \
+        "${PROCESSED_IMAGES[@]}"
 fi
 
 # ── Copy raw images (.npz from datasets/) ────────────────────────────────────
 if [[ ${#RAW_IMAGES[@]} -gt 0 ]]; then
     step "Copying ${#RAW_IMAGES[@]} raw image(s) → datasets/"
-    for img in ${RAW_IMAGES[@]+"${RAW_IMAGES[@]}"}; do
-        remote_subdir=$(campaign_subdir "$img" "${REMOTE_DATASETS_DIR}")
-        if ! $DRY_RUN; then
-            $SSH_CMD $SSH_OPTS "$SSH_TARGET" "mkdir -p ${remote_subdir}"
-        fi
-        copy_asset "$img" "$remote_subdir" "raw image"
-    done
+    copy_images "$REMOTE_DATASETS_DIR" "raw image" \
+        "${RAW_IMAGES[@]}"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
