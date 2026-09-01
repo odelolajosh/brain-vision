@@ -5,7 +5,7 @@
 # ║  Usage: ./scripts/deploy.sh [options]                                      ║
 # ║                                                                              ║
 # ║  Options:                                                                    ║
-# ║    --host HOST          Pi hostname or IP  [default: joshua.local]          ║
+# ║    --host HOST          Pi hostname or IP  [default: raspberrypi.local]     ║
 # ║    --user USER          Pi username        [default: joshua]                ║
 # ║    --port PORT          SSH port           [default: 22]                    ║
 # ║    --mode MODE          fast | full        [default: fast]                  ║

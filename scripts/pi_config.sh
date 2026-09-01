@@ -7,7 +7,7 @@
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 # ── Connection ─────────────────────────────────────────────────────────────────
-PI_HOST="${PI_HOST:-joshua.local}"
+PI_HOST="${PI_HOST:-raspberrypi.local}"
 PI_USER="${PI_USER:-joshua}"
 PI_PORT="${PI_PORT:-22}"
 
@@ -32,7 +32,7 @@ MIN_DISK_MB=512
 # ── Auth ───────────────────────────────────────────────────────────────────────
 # Option A — SSH key (recommended, no setup needed here):
 #   ssh-keygen -t ed25519
-#   ssh-copy-id joshua@joshua.local
+#   ssh-copy-id joshua@raspberrypi.local
 #
 # Option B — Password via sshpass:
 #   export PI_PASSWORD="yourpassword"
@@ -82,8 +82,12 @@ step()    { echo -e "\n${BOLD}── $* ──${NC}"; }
 # ── Call this after argument parsing to rebuild SSH_CMD with current PI_PASSWORD ──
 rebuild_ssh_cmd() {
     SSH_TARGET="${PI_USER}@${PI_HOST}"
-    SSH_OPTS="-p ${PI_PORT} -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
-    SCP_OPTS="-P ${PI_PORT} -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+    # ControlMaster multiplexes all connections over one authenticated session.
+    # Without it, dozens of rapid scp/ssh calls trip sshd's MaxStartups limit
+    # and start getting "Permission denied".
+    _CM="-o ControlMaster=auto -o ControlPath=/tmp/bv-%r@%h:%p -o ControlPersist=120"
+    SSH_OPTS="-p ${PI_PORT} -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new ${_CM}"
+    SCP_OPTS="-P ${PI_PORT} -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new ${_CM}"
     if [[ -n "${PI_PASSWORD}" ]]; then
         if command -v sshpass &>/dev/null; then
             SSH_CMD="sshpass -p ${PI_PASSWORD} ssh"
