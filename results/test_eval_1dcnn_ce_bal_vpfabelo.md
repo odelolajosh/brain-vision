@@ -11,7 +11,7 @@
 | Labelled pixels | 246,545 |
 | Median fold | 4 |
 | Device | mps |
-| Date | 2026-08-31 |
+| Date | 2026-09-01 |
 
 Metrics from `brainvision.metrics.compute_metrics` (pooled per-fold confusion matrix, labelled pixels only). Aggregate = median ± population std across folds.
 
@@ -19,8 +19,8 @@ Metrics from `brainvision.metrics.compute_metrics` (pooled per-fold confusion ma
 
 | Fold | Macro F1 | F1 no-BG | OA | TT Sens | NT F1 | TT F1 | BV F1 | BG F1 | Time (s) |
 |---|---|---|---|---|---|---|---|---|---|
-| 1 | 74.8 | 73.3 | 80.8 | 83.0 | 88.8 | 55.6 | 75.4 | 79.5 | 1.6 |
-| 2 | 76.1 | 74.6 | 81.9 | 70.9 | 88.4 | 57.0 | 78.3 | 80.6 | 1.2 |
+| 1 | 74.8 | 73.3 | 80.8 | 83.0 | 88.8 | 55.6 | 75.4 | 79.5 | 1.4 |
+| 2 | 76.1 | 74.6 | 81.9 | 70.9 | 88.4 | 57.0 | 78.3 | 80.6 | 1.1 |
 | 3 | 78.6 | 77.1 | 84.0 | 65.1 | 89.8 | 61.6 | 80.0 | 82.9 | 1.1 |
 | 4 | 74.8 | 73.3 | 81.5 | 63.6 | 88.4 | 51.5 | 79.9 | 79.4 | 1.0 |
 | 5 | 72.9 | 71.2 | 80.1 | 61.9 | 87.8 | 48.9 | 76.9 | 78.1 | 1.0 |
