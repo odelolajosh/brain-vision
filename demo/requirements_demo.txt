@@ -1,7 +1,31 @@
 # brainvision demo — inference-only dependencies
-# Install on Pi 5:  pip install -r requirements_demo.txt
+#
+# Install on Pi 5:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements_demo.txt
+#
+# Install torch FIRST from the CPU wheel index — the default PyPI wheel pulls
+# CUDA libraries that are useless on the Pi and add ~2 GB to the download.
 
 streamlit>=1.35.0
-torch>=2.0.0          # use torch CPU wheel for Pi: --index-url https://download.pytorch.org/whl/cpu
+torch>=2.0.0
 numpy>=1.24.0
 matplotlib>=3.7.0
+
+# Required by brainvision/models/spectralformer.py (tensor rearrangement).
+# Pure Python, no build step — installs fine on Pi 5. Without it, the
+# SpectralFormer ViT and CAF variants cannot be imported or timed.
+einops>=0.6.0
+
+# ── Deliberately excluded ────────────────────────────────────────────────────
+# scikit-learn : used by brainvision/metrics.py (training only). The demo and
+#                latency scripts compute metrics from confusion matrices
+#                directly, so it is not needed at inference time.
+# scipy        : used by brainvision/preprocessing.py for the raw 826-band
+#                pipeline. The Pi consumes pre-processed 128-band .npz files,
+#                so only min-max normalisation is required and that is done
+#                in-app with numpy.
+#
+# Both are stubbed out on the Pi by scripts/pi_sync_code.sh, which overwrites
+# brainvision/__init__.py and brainvision/models/__init__.py so that importing
+# a single model module does not drag in the whole training stack.

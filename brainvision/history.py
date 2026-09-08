@@ -127,6 +127,7 @@ def load_history(cfg: dict, result_dir: str | Path) -> dict | None:
         strategy      = cfg['strategy'],
         fold          = cfg['fold'],
         reduce_pixels = cfg['reduce_pixels'],
+        sf_mode       = cfg['sf_mode']
     )
     path = result_dir / f"{run_name}_history.npy"
     if not path.exists():

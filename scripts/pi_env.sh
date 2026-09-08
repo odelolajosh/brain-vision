@@ -107,7 +107,8 @@ if [ -f "\${REQ_FILE}" ]; then
     echo "Requirements installed from \${REQ_FILE}"
 else
     echo "requirements_demo.txt not found — installing core packages directly"
-    pip install streamlit numpy matplotlib --quiet
+    echo "(this happens on a first deploy, before code sync has run)"
+    pip install streamlit numpy matplotlib einops --quiet
 fi
 
 # ── Verify imports ────────────────────────────────────────────────────────────
