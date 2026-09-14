@@ -14,7 +14,6 @@ Usage:
 """
 
 import numpy as np
-from scipy.ndimage import uniform_filter1d
 
 from brainvision.constants import (
     SMOOTH_WINDOW,
@@ -57,6 +56,13 @@ def smooth_spectra(cube:   np.ndarray,
 
     Input / Output: (H, W, B) float32
     """
+    from scipy.ndimage import uniform_filter1d  # lazy: only this raw-pipeline
+    # step needs scipy — importing it at module level would force every
+    # submodule-direct import (e.g. `from brainvision.preprocessing import
+    # minmax_normalise`, which the Pi demo does) to pull in scipy too, even
+    # though minmax_normalise itself is pure numpy. See
+    # demo/requirements_demo.txt and scripts/pi_sync_code.sh, both of which
+    # assume scipy is NOT required for the demo's own imports.
     return uniform_filter1d(cube, size=window, axis=2).astype(np.float32)
 
 
