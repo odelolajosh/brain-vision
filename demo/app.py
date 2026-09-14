@@ -335,6 +335,15 @@ _REST_CSS = """
     max-height: 64vh !important; width: auto !important; max-width: 100%;
     object-fit: contain; border-radius: 10px; display: block; margin: 0 auto;
 }
+
+/* Realtime screen's main section: big viewport (+ minimap inset) + a right
+   panel (legend, Pause/Play, Speed) — leaves room below for the progress bar. */
+.st-key-realtime_main { display: flex; align-items: center; min-height: 52vh; }
+.st-key-realtime_main [data-testid="stHorizontalBlock"] { width: 100%; align-items: center; }
+.st-key-realtime_main [data-testid="stImage"] img {
+    max-height: 56vh !important; width: auto !important; max-width: 100%;
+    object-fit: contain; border-radius: 10px; display: block; margin: 0 auto;
+}
 """
 
 st.markdown(f"<style>{_TOKENS_CSS}{_REST_CSS}</style>", unsafe_allow_html=True)
@@ -658,46 +667,22 @@ def latency_badge(ms: float, live: bool | None = None) -> str:
     return f"<div class='bv-badge'><span class='{dot_cls}'></span>{ms / 1000:.1f} s</div>"
 
 
-def classification_legend() -> str:
-    """Big 'Classification' legend for the Static screen's main section —
-    one row per class: a solid swatch plus its plain name, sized to read
-    from across a room."""
+def classification_legend(class_colors: dict) -> str:
+    """Legend shared by the Static and Realtime right panels — one row per
+    class: a solid swatch plus its plain name, sized to read from across a
+    room. Each screen passes its own palette (STATIC_CLASS_COLORS /
+    DEMO_CLASS_COLORS) so the swatches always match what's on screen."""
     rows = "".join(
         f"<div style='display:flex;align-items:center;gap:12px;margin-bottom:18px'>"
         f"<span style='width:28px;height:28px;border-radius:6px;flex-shrink:0;"
-        f"background:{STATIC_CLASS_COLORS[l]}'></span>"
+        f"background:{class_colors[l]}'></span>"
         f"<span style='font-size:17px;font-weight:600;color:{TEXT_HEADING}'>"
         f"{CLASS_NAMES[l].split(' (')[0]}</span></div>"
-        for l in sorted(STATIC_CLASS_COLORS)
+        for l in sorted(class_colors)
     )
     return (
         f"<div style='display:flex;flex-direction:column;justify-content:center'>"
-        f"<div style='font-size:20px;font-weight:800;color:{TEXT_HEADING};"
-        f"margin-bottom:16px'>Classification</div>{rows}</div>"
-    )
-
-
-def tissue_legend_vertical() -> str:
-    """Stacked, right-aligned legend for the Realtime control row — same
-    class set and colours as tissue_legend(), short labels, one per line."""
-    rows = "".join(
-        f"<div style='display:flex;align-items:center;justify-content:flex-end;"
-        f"gap:6px;font-size:11px;color:{TEXT_SECONDARY};margin-bottom:2px'>"
-        f"{CLASS_NAMES[l].split(' (')[0]}<span class='sw' "
-        f"style='background:{DEMO_CLASS_COLORS[l]}'></span></div>"
-        for l in sorted(DEMO_CLASS_COLORS)
-    )
-    return f"<div>{rows}</div>"
-
-
-def image_switch_pill(idx: int, font_size: int = 14) -> str:
-    """Raised pill label shared by every image-switch control: 'Image X/3 — Title'."""
-    return (
-        f"<div style='text-align:center'><span style='display:inline-block;"
-        f"background:{BG_PANEL_RAISED};border-radius:999px;padding:6px 14px;"
-        f"color:{TEXT_HEADING};font-size:{font_size}px;font-weight:700;"
-        f"white-space:nowrap'>Image {idx + 1}/{len(CASES)} — {CASES[idx]['title']}"
-        f"</span></div>"
+        f"{rows}</div>"
     )
 
 
@@ -934,7 +919,7 @@ def screen_static() -> None:
         with col_img:
             st.image(result["pred_map"], use_container_width=True)
         with col_legend:
-            st.markdown(classification_legend(), unsafe_allow_html=True)
+            st.markdown(classification_legend(STATIC_CLASS_COLORS), unsafe_allow_html=True)
 
     # ── Metrics — below the fold ────────────────────────────────────────────
     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
@@ -948,13 +933,7 @@ def screen_static() -> None:
                "Accuracy on the pixels that were actually scored"),
         unsafe_allow_html=True,
     )
-    fallback_note = (" — CE + no-balancing weights unavailable, showing the "
-                      "CE + balanced checkpoint instead" if STATIC_MODEL_IS_FALLBACK else "")
-    st.markdown(
-        f"<div class='bv-modelnote'>{MODELS[STATIC_MODEL_KEY]['arch_label']}"
-        f"{fallback_note}</div>",
-        unsafe_allow_html=True,
-    )
+
     st.caption(f"{m['n_labelled']:,} labelled px scored · {m['n_incorrect']:,} disagree "
                f"· {m['n_unlabelled']:,} unlabelled px not scored")
 
@@ -966,23 +945,23 @@ def screen_realtime() -> None:
     speed    = st.session_state.setdefault("rt_speed", "Normal")
     case_idx = st.session_state.setdefault("rt_case_idx", 0)
 
-    # ── Top bar: home | title | image switch (compact, grouped) | latency | live ──
-    c_home, c_title, c_prev, c_label, c_next, c_lat, c_live = st.columns(
-        [0.6, 1.7, 0.45, 2.7, 0.45, 1.15, 1.0]
+    # ── Top bar: home | title | shuffle | latency | live ───────────────────
+    c_home, c_title, c_shuffle, c_lat, c_live = st.columns(
+        [0.6, 3.0, 0.6, 1.2, 1.0]
     )
     with c_home:
         if st.button("⌂", key="home_realtime", help="Home"):
             goto("welcome")
             st.rerun()
-    with c_prev:
-        if st.button("◀", key="rt_case_prev"):
-            case_idx = (case_idx - 1) % len(CASES)
-    with c_next:
-        if st.button("▶", key="rt_case_next"):
-            case_idx = (case_idx + 1) % len(CASES)
-    st.session_state.rt_case_idx = case_idx
+    with c_shuffle:
+        if st.button("🔀", key="rt_shuffle", help="Shuffle image"):
+            if len(CASES) > 1:
+                case_idx = random.choice(
+                    [i for i in range(len(CASES)) if i != case_idx])
+            st.session_state.rt_case_idx = case_idx
+            st.rerun()
 
-    # Image switch, play state and scan progress are independent: only the
+    # Image choice, play state and scan progress are independent: only the
     # case selection resolved above feeds this lookup.
     rt = compute_realtime(case_idx)
     n_steps = len(rt["frames"])
@@ -993,8 +972,6 @@ def screen_realtime() -> None:
     with c_title:
         st.markdown("<div class='bv-screen-title' style='padding-top:8px'>Realtime Demo</div>",
                     unsafe_allow_html=True)
-    with c_label:
-        st.markdown(image_switch_pill(case_idx, font_size=13), unsafe_allow_html=True)
     with c_lat:
         st.markdown(f"<div style='padding-top:5px'>{latency_badge(frame['latency_ms'])}</div>",
                     unsafe_allow_html=True)
@@ -1006,30 +983,27 @@ def screen_realtime() -> None:
             f"font-weight:700'><span style='color:{live_color}'>●</span> {live_text}</div>",
             unsafe_allow_html=True)
 
-    # ── Primary display: enlarged current viewport, minimap inset top-right ──
-    composed = compose_viewport_frame(frame, rt["rgb_full"], rt["shape"])
-    st.image(composed, use_container_width=True)
-
-    # ── Control row: Pause/Play | Speed (Slow/Normal/Fast) | Legend ──
-    ctrl_l, ctrl_mid, ctrl_r = st.columns([1.5, 3, 3.2], gap="small")
-    with ctrl_l:
-        with st.container(key="rt_playpause"):
-            if st.button("⏸ Pause" if playing else "▶ Play", key="rt_playpause_btn"):
-                playing = not playing
-                st.session_state.rt_playing = playing
-    with ctrl_mid:
-        st.markdown(f"<div style='color:{TEXT_SECONDARY};font-size:11px;padding-top:6px'>Speed</div>",
-                    unsafe_allow_html=True)
-        with st.container(key="toggle_speed"):
-            s1, s2, s3 = st.columns(3)
-            for col, label in zip((s1, s2, s3), ("Slow", "Normal", "Fast")):
-                with col:
+    # ── Main: big viewport (+ minimap) + right panel (legend, Pause/Play, Speed) ──
+    with st.container(key="realtime_main"):
+        col_img, col_panel = st.columns([3.4, 1], gap="medium")
+        with col_img:
+            composed = compose_viewport_frame(frame, rt["rgb_full"], rt["shape"])
+            st.image(composed, use_container_width=True)
+        with col_panel:
+            st.markdown(classification_legend(DEMO_CLASS_COLORS), unsafe_allow_html=True)
+            st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+            with st.container(key="rt_playpause"):
+                if st.button("⏸ Pause" if playing else "▶ Play", key="rt_playpause_btn"):
+                    playing = not playing
+                    st.session_state.rt_playing = playing
+            st.markdown(f"<div style='color:{TEXT_SECONDARY};font-size:11px;margin-top:10px'>"
+                        f"Speed</div>", unsafe_allow_html=True)
+            with st.container(key="toggle_speed"):
+                for label in ("Slow", "Normal", "Fast"):
                     if st.button(label, key=f"speed_{label}",
                                  type="primary" if speed == label else "secondary"):
                         speed = label
-        st.session_state.rt_speed = speed
-    with ctrl_r:
-        st.markdown(tissue_legend_vertical(), unsafe_allow_html=True)
+            st.session_state.rt_speed = speed
 
     # ── Progress: plain filled bar, no handle — not a scrubber ──
     pct = pos / (n_steps - 1) if n_steps > 1 else 0.0
