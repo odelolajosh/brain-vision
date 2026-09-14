@@ -235,7 +235,7 @@ _REST_CSS = """
     font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 }
 
-.bv-screen-title { font-size: 20px; font-weight: 800; color: var(--text-heading); margin: 0; }
+.bv-screen-title { font-size: 18px; font-weight: 800; color: var(--text-heading); margin: 0; }
 .bv-screen-sub   { font-size: 12px; color: var(--text-secondary); margin: 1px 0 0 0; }
 
 .bv-chip {
@@ -673,15 +673,15 @@ def classification_legend(class_colors: dict) -> str:
     room. Each screen passes its own palette (STATIC_CLASS_COLORS /
     DEMO_CLASS_COLORS) so the swatches always match what's on screen."""
     rows = "".join(
-        f"<div style='display:flex;align-items:center;gap:12px;margin-bottom:18px'>"
-        f"<span style='width:28px;height:28px;border-radius:6px;flex-shrink:0;"
+        f"<div style='display:flex;align-items:center;gap:12px;'>"
+        f"<span style='width:18px;height:18px;border-radius:6px;flex-shrink:0;"
         f"background:{class_colors[l]}'></span>"
-        f"<span style='font-size:17px;font-weight:600;color:{TEXT_HEADING}'>"
+        f"<span style='font-size:14px;font-weight:600;color:{TEXT_HEADING}'>"
         f"{CLASS_NAMES[l].split(' (')[0]}</span></div>"
         for l in sorted(class_colors)
     )
     return (
-        f"<div style='display:flex;flex-direction:column;justify-content:center'>"
+        f"<div style='display:flex;flex-direction:column;justify-content:center;gap:2px'>"
         f"{rows}</div>"
     )
 
@@ -757,7 +757,7 @@ def screen_mode() -> None:
     /* Turn the containers into relative bounding boxes */
     .st-key-tile_static, .st-key-tile_realtime {
         position: relative;
-        height: 96px;
+        height: 64px;
         margin-bottom: 8px;
     }
 
@@ -765,7 +765,7 @@ def screen_mode() -> None:
         position: absolute !important;
         top: 0 !important;
         left: 0 !important;
-        height: 96px !important;
+        height: 64px !important;
         right: 0 !important;
         z-index: 10 !important;
         opacity: 1 !important;
@@ -795,7 +795,7 @@ def screen_mode() -> None:
         padding: 0 16px; 
         display: flex; 
         align-items: center; 
-        height: 96px; /* Sized for 800x480 layout */
+        height: 64px;
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
     .card-static { background: var(--accent-primary); }
@@ -815,9 +815,9 @@ def screen_mode() -> None:
     }
     
     .text-box { flex-grow: 1; }
-    .card-title { font-size: 22px; font-weight: 700; color: white; margin-bottom: 4px; line-height: 1.1; }
-    .card-desc { font-size: 15px; color: rgba(255,255,255,0.85); line-height: 1.3; margin: 0; }
-    .chevron { font-size: 30px; font-weight: 800; color: white; opacity: 0.9; }
+    .card-title { font-size: 18px; font-weight: 700; color: white; margin-bottom: 4px; line-height: 1.1; }
+    .card-desc { font-size: 12px; color: rgba(255,255,255,0.85); line-height: 1.3; margin: 0; }
+    .chevron { font-size: 16px; font-weight: 800; color: white; opacity: 0.9; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -825,7 +825,7 @@ def screen_mode() -> None:
     c_head, c_home = st.columns([7, 1])
     with c_head:
         st.markdown("""
-        <div style='display: flex; align-items: center; height: 100%; margin-top: 5px;'>
+        <div style='display: flex; align-items: center;'>
             <div style='font-size: 26px; color: var(--accent-primary); margin-right: 12px;'>🧠</div>
             <div style='font-size: 18px; font-weight: 700; color: var(--text-heading);'>Brain Tumour Classification</div>
         </div>
@@ -835,10 +835,10 @@ def screen_mode() -> None:
             goto("welcome")
             st.rerun()
             
-    st.markdown("<div style='border-bottom: 1px solid var(--bg-panel-raised); margin-bottom: 25px; margin-top: 10px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='border-bottom: 1px solid var(--bg-panel-raised);'></div>", unsafe_allow_html=True)
 
     # Title
-    st.markdown("<div style='font-size:24px; font-weight:bold; text-align:center; margin-bottom: 25px; color: var(--text-heading);'>Choose a Demo Mode</div>", unsafe_allow_html=True)
+    st.markdown("<div style='font-size:18px; font-weight:bold; text-align:center; margin-bottom: 25px; color: var(--text-heading);'>Choose a Demo Mode</div>", unsafe_allow_html=True)
 
     # Tile 1: Static Image
     with st.container(key="tile_static"):
