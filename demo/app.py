@@ -2,163 +2,192 @@
 brainvision — Intraoperative HSI Brain Tumour Classification
 Defence touchscreen demo.
 
-Implements the merged conceptual UI spec: a five-screen, touch-driven flow
-(Idle -> Case Select -> Live Inference -> Summary, plus a flagged Free Pan/Zoom
-bonus mode). It reorganises the existing pan/zoom simulator, minimap,
-live-inference badge and three-panel display — it does not rebuild them.
+Four-screen flow, touch-only, built for an 800x480 7" Raspberry Pi 5 panel:
+
+    Welcome/Idle --"Begin Demo"--> Choose Mode --+--> Static Comparison
+                       ^                          |
+                       +---------- Home (⌂) ------+--> Realtime Demo
+
+Everything a presenter tunes for a specific defence lives in the CASES list
+and the MODELS registry below. Import everything possible from the
+`brainvision` package — no duplicated model or preprocessing code.
 
 Run from the repo root:
     streamlit run demo/app.py
-
-Everything a presenter tunes for a specific defence lives in the two config
-blocks below: CASES (the three fixed cases) and PARETO_POINTS (the summary
-scatter). Numbers marked REHEARSAL should be replaced with values measured on
-the actual defence hardware.
 """
 
-import io
+import random
 import time
 from pathlib import Path
 
-import matplotlib.patches as mpatches
-import matplotlib.pyplot as plt
 import numpy as np
 import streamlit as st
 import torch
+from PIL import Image, ImageDraw
 
-# ── brainvision package imports (no duplicated model / preprocessing code) ─────
-from brainvision.constants import (
-    CLASS_COLORS, CLASS_NAMES, N_DECIMATED_BANDS, N_CLASSES,
-)
-from brainvision.models.fabelo_dnn   import FabeloDNN
-from brainvision.models.baseline_dnn import Baseline1DDNN
-from brainvision.models.hu_1dcnn     import HuEtAl1DCNN
-from brainvision.models.fabelo_2dcnn import Fabelo2DCNN
-from brainvision.models.lee_2dcnn    import LeeEtAl2DCNN
-from brainvision.models.simple_2dcnn import Simple2DCNN
+from brainvision.constants import CLASS_NAMES, N_DECIMATED_BANDS, N_CLASSES
+from brainvision.device import get_device
+from brainvision.preprocessing import minmax_normalise
+from brainvision.models.fabelo_dnn import FabeloDNN
+from brainvision.models.hu_1dcnn import HuEtAl1DCNN
+
+DEVICE = get_device()   # CUDA > MPS > CPU — resolves to CPU on the Pi 5 itself
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  PRESENTER CONFIG 1 — the three fixed cases (spec §0, §2b, §2c)
+#  PRESENTER CONFIG 1 — the three preset images, shared by Static & Realtime
 # ═════════════════════════════════════════════════════════════════════════════
-# Each case is one screenful of the Live Inference view. `crop` is
-# (row0, col0, size) in pixels, or None for the whole image. Keep 2D (patch)
-# cases cropped — patch inference is slow. `caption` is the plain-language
-# narrative line shown in the caption band; retune it in rehearsal so it
-# matches what the chosen crop actually shows.
+# `crop` is (row0, col0, size) in pixels, or None for the whole image. These
+# three were chosen from the HELICoiD set already on disk to match the three
+# required narrative roles (spec §4.1) — not synthesised or arbitrary.
 
 CASES = [
     {
-        "key":        "clear_match",
-        "title":      "Clear Match",
-        "role":       "A clean success — prediction and labels line up.",
-        "image":      "processed/first_campaign/008-02.npz",
-        "crop":       None,
-        "model":      "1D-NN-Fabelo",
-        "checkpoint": "checkpoints/1dnnfabelo_ce_bal_fold2_vpfabelo.pt",
-        "patch_size": None,
-        "caption":    "The spectral model separates healthy tissue, vessel and "
-                      "background cleanly — most labelled pixels agree.",
+        "key":     "clear_match",
+        "title":   "Clear Match",
+        "role":    "A clean success — prediction and labels line up.",
+        "image":   "processed/first_campaign/008-02.npz",
+        "crop":    None,
     },
     {
-        "key":        "spatial_sensitivity",
-        "title":      "Spatial Sensitivity Gain",
-        "role":       "Spatial context catches more tumour tissue.",
-        "image":      "processed/second_campaign/038-01.npz",
-        "crop":       (170, 285, 165),   # centred on this image's tumour region
-        "model":      "2D-CNN-Fabelo",
-        "checkpoint": "checkpoints/2dcnnfabelo_ufl_bal_fold2_vpfabelo.pt",
-        "patch_size": 11,
-        "caption":    "The spatial model catches most tumour tissue present here — "
-                      "it prioritises not missing cancer over precision.",
+        "key":     "spatial_sensitivity",
+        "title":   "Spatial Sensitivity Gain",
+        "role":    "The sensitivity-prioritised model catches more tumour tissue.",
+        "image":   "processed/second_campaign/038-01.npz",
+        "crop":    (170, 285, 165),
     },
     {
-        "key":        "honest_near_miss",
-        "title":      "Honest Near-Miss",
-        "role":       "A case the model gets partly wrong — shown on purpose.",
-        "image":      "processed/first_campaign/012-01.npz",
-        "crop":       None,
-        "model":      "1D-NN-Fabelo",
-        "checkpoint": "checkpoints/1dnnfabelo_ce_bal_fold2_vpfabelo.pt",
-        "patch_size": None,
-        "caption":    "The prediction disagrees with part of the labelled region. "
-                      "No model is perfect on this dataset — this is a real result.",
+        "key":     "honest_near_miss",
+        "title":   "Honest Near-Miss",
+        "role":    "A case the model gets partly wrong — shown on purpose.",
+        "image":   "processed/first_campaign/012-01.npz",
+        "crop":    None,
     },
 ]
 
-# ═════════════════════════════════════════════════════════════════════════════
-#  PRESENTER CONFIG 2 — the Summary Pareto scatter (spec §2d)
-# ═════════════════════════════════════════════════════════════════════════════
-# x = inference latency for a full image (seconds, log axis)
-# y = macro F1-noBG (the primary metric)
-# `tt_sens` is annotated only on the two starred viable-region points.
-# LATENCY VALUES ARE REHEARSAL PLACEHOLDERS — measure on the defence hardware.
-
-PARETO_POINTS = [
-    # label,                 latency_s, f1_no_bg, params,      viable, tt_sens
-    ("1D-DNN (spectral)",        0.02,    0.684,     4_936,     True,   0.644),
-    ("1D-CNN",                   0.05,    0.703,    76_824,     False,  None),
-    ("2D-CNN (spatial)",        22.0,     0.759,   142_052,     True,   0.669),
-    ("HybridSN",                90.0,     0.751, 2_601_588,     False,  None),
-    ("SpectralFormer",         120.0,     0.742,   198_197,     False,  None),
-]
-VIABILITY_LINE_S = 60.0   # clinical-viability latency ceiling (spec §2d)
-
-# Rotating one-liners under the scatter — presenter taps to cycle (spec §2d).
-SUMMARY_FINDINGS = [
-    "A 4,936-parameter spectral model matches a model 3,400x larger on F1 — "
-    "parameter count is not the bottleneck.",
-    "Spatial context buys tumour sensitivity, not median F1: about +2.55 pp "
-    "tumour sensitivity for roughly no change in F1-noBG.",
-    "Unified Focal Loss lifts tumour sensitivity by up to 18.5 pp over "
-    "cross-entropy — but the size of the gain depends on the architecture.",
+# Static Comparison screen's own preset set — 7 images, shuffled between via
+# the top-bar button. Deliberately separate from CASES (Realtime's 3): each
+# screen indexes its own list, so they can't cache-collide or drift together.
+# Picked for a spread of class mixes (checked against each image's labelled
+# pixel counts) rather than reusing the same 3 narrative cases.
+STATIC_CASES = [
+    {"key": "clear_match",     "title": "Clear Match",
+     "image": "processed/first_campaign/008-02.npz",  "crop": None},
+    {"key": "vessel_tumour",   "title": "Vessel & Tumour",
+     "image": "processed/first_campaign/012-01.npz",  "crop": None},
+    {"key": "balanced_mix",    "title": "Balanced Mix",
+     "image": "processed/second_campaign/038-01.npz", "crop": None},
+    {"key": "tumour_dominant", "title": "Tumour Dominant",
+     "image": "processed/first_campaign/020-01.npz",  "crop": None},
+    {"key": "vessel_heavy",    "title": "Vessel Heavy",
+     "image": "processed/first_campaign/015-01.npz",  "crop": None},
+    {"key": "rich_mix",        "title": "Rich Mix",
+     "image": "processed/first_campaign/012-02.npz",  "crop": None},
+    {"key": "compact_mix",     "title": "Compact Mix",
+     "image": "processed/second_campaign/040-02.npz", "crop": None},
 ]
 
-# ── Plain-language metric translation (spec §5) — one consequence sentence each
-METRIC_PLAIN = {
-    "f1_no_bg": ("Overall tissue agreement",
-                 "How well the model tells tissue types apart, excluding background."),
-    "tt_sens":  ("Tumour detection",
-                 "Of the tumour that is really there, how much the model catches."),
-    "latency":  ("Inference time",
-                 "How long the surgeon would wait for this to update."),
-    "params":   ("Model size",
-                 "How small and fast the model is to run on this hardware."),
-    "agree":    ("Agreement on labelled pixels",
-                 "Where ground truth exists, how often the prediction matches it."),
+# ═════════════════════════════════════════════════════════════════════════════
+#  PRESENTER CONFIG 2 — model registry
+# ═════════════════════════════════════════════════════════════════════════════
+# Checkpoint filenames follow the run-naming convention
+# {model}_{loss}_{balance}_{fold}_{strategy}. Fold is the MEDIAN fold from
+# each model's results/test_eval_*.md, matching thesis reporting convention.
+
+MODELS = {
+    "1D-DNN-Fabelo": dict(
+        cls=FabeloDNN, kind="pixel", kwargs={},
+        checkpoint="checkpoints/1dnnfabelo_ce_bal_fold3_vpfabelo.pt",
+        params=4_936,
+        arch_label="1D-DNN-Fabelo (Fabelo et al., 2019) — 4,936 params",
+    ),
+    "1D-CNN-Hu": dict(
+        cls=HuEtAl1DCNN, kind="pixel", kwargs={},
+        # See STATIC_MODEL_IS_FALLBACK below — the CE+no-balancing checkpoint
+        # this points at when available is fold 3; the fallback used here is
+        # fold 4 (CE+balanced's own median fold).
+        checkpoint="checkpoints/1dcnn_ce_bal_fold4_vpfabelo.pt",
+        params=76_824,
+        arch_label="1D-CNN-Hu, CE (Hu et al., 2015) — 76,824 params",
+    ),
 }
 
-# ── Model registry (reused from the simulator) ───────────────────────────────
-MODEL_REGISTRY = {
-    "1D-NN-Fabelo":   (FabeloDNN,     "pixel"),
-    "1D-NN-Baseline": (Baseline1DDNN, "pixel"),
-    "1D-CNN":         (HuEtAl1DCNN,   "pixel"),
-    "2D-CNN-Fabelo":  (Fabelo2DCNN,   "patch"),
-    "2D-CNN-Simple":  (Simple2DCNN,   "patch"),
-    "2D-CNN-LeeEtAl": (LeeEtAl2DCNN,  "patch"),
+MODEL_A_KEY = "1D-DNN-Fabelo"   # used by the Realtime screen only
+
+# ── Static Comparison screen — single fixed (model, image) pair ────────────
+# The intended checkpoint (CE loss, no class-balancing, median fold 3 per
+# results/test_eval_1dcnn_ce_nobal_vpfabelo.md) was evaluated but its .pt
+# weights were not kept in this checkout's checkpoints/ directory — the same
+# situation the old Model B (SpectralFormer-CAF-CE) was in. MODELS["1D-CNN-Hu"]
+# above already points at the nearest available fallback (CE, balanced,
+# fold 4); this flag just decides whether the screen shows that it's not
+# running the exact preferred variant.
+STATIC_MODEL_KEY             = "1D-CNN-Hu"
+STATIC_PREFERRED_CHECKPOINT  = "checkpoints/1dcnn_ce_nobal_fold3_vpfabelo.pt"
+STATIC_MODEL_IS_FALLBACK     = not Path(STATIC_PREFERRED_CHECKPOINT).exists()
+
+NPZ_CUBE_KEY = "processed"
+NPZ_GT_KEY   = "labels"
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Design tokens — sampled directly from the reference mockup's pixels.
+#  Single source of truth: emitted as CSS custom properties (see the <style>
+#  block below) and reused in the few places Python builds inline styles, so
+#  a future palette change only requires editing this block.
+# ═════════════════════════════════════════════════════════════════════════════
+BG_APP             = "#001B33"
+BG_PANEL_RAISED    = "#113A5E"
+
+ACCENT_PRIMARY     = "#0A7CF5"   # top-level CTAs (Begin Demo, Static Image tile)
+ACCENT_SECONDARY   = "#2A3FA0"   # Realtime Demo tile
+ACCENT_ICON_CHIP   = "#3798FC"
+
+STATE_SELECTED     = "#0568C7"   # active segment in an in-screen toggle
+STATE_UNSELECTED   = "#022E56"   # inactive segment in the same toggle
+
+STATUS_READY_GREEN = "#05C832"
+STATUS_LIVE_RED    = "#FF1020"
+STATUS_OFF         = "#4F6C88"   # not sampled — muted neutral for a paused/off dot
+
+TEXT_HEADING       = "#FFFFFF"
+TEXT_SECONDARY     = "#A9C2DA"
+
+PROGRESS_TRACK     = "#04447A"
+PROGRESS_FILL      = "#0074B0"
+
+# Demo-only tissue-class skin for the kiosk UI. brainvision.constants.
+# CLASS_COLORS (used by notebooks/thesis figures) is intentionally untouched —
+# this repaints the same 4 classes for this screen only.
+DEMO_CLASS_COLORS = {1: "#22C55E", 2: "#FF1521", 3: "#FAF404", 4: "#87A5C7"}
+
+# Static screen's classification-map + legend palette — matches the
+# presenter's reference slide (blue/red/green/grey), independent of
+# DEMO_CLASS_COLORS (the Realtime screen's palette).
+STATIC_CLASS_COLORS = {1: "#2F6FDE", 2: "#C41E3A", 3: "#3CA55C", 4: "#A9B0B8"}
+
+SCAN_MARKER   = TEXT_HEADING   # minimap border / viewport-rectangle colour — bright,
+                                # high-contrast, and not used as a fill anywhere else
+SCAN_N_STEPS  = 240
+SPEED_CONFIG  = {   # label -> (path steps advanced per tick, seconds between ticks)
+    "Slow":   (1, 0.55),
+    "Normal": (2, 0.32),
+    "Fast":   (4, 0.16),
 }
 
-PSEUDO_RGB_BANDS = (88, 42, 7)          # ~709 R, ~539 G, ~479 B
-NPZ_CUBE_KEY     = "processed"
-NPZ_GT_KEY       = "labels"
-
-# ── Agreement overlay palette (spec §4, §8) ──────────────────────────────────
-# A separate three-state scheme, deliberately NOT the tissue-class colours, so
-# it can never be read as a tissue class. Always shown with the ✓ / ✕ / · glyph
-# and word — never colour alone.
-AGREE_COLORS = {
-    "correct":    ("#3C6E47", "✓", "Correct"),      # muted green — calm
-    "incorrect":  ("#E8A33D", "✗", "Incorrect"),    # amber — warning
-    "unlabelled": ("#3A3A3A", "·", "Unlabelled"),   # grey hatch — neutral
-}
-
-SPARSE_GT_NOTE = (
-    "Ground truth is sparse: unlabelled pixels are NOT counted as errors. "
-    "They were never annotated."
-)
+# Realtime viewport — the small window actually being classified. The primary
+# display shows this crop enlarged; the minimap shows where it sits in the
+# full source image. Fixed pixel-size box (clamped to the image), not a
+# shrinking crop, so the minimap rectangle's size reads consistently.
+VIEWPORT_FRAC   = 0.34
+VIEWPORT_ASPECT = 1.45          # viewport width / height
+VIEWPORT_MIN_H  = 56
+VIEWPORT_MAX_H  = 260
+MINIMAP_SIZE    = 130           # minimap thumbnail width, px
+OVERLAY_ALPHA   = 0.55
+OVERLAY_CLASSES = (1, 2, 3)     # NT, TT, BV tinted; Background left as raw tissue colour
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  Page setup + kiosk styling (spec §0: 1024x600 landscape; §8: type / contrast)
+#  Page setup + kiosk styling — tuned for 800x480 (7" touchscreen)
 # ═════════════════════════════════════════════════════════════════════════════
 st.set_page_config(
     page_title="brainvision — Intraoperative HSI Classification",
@@ -167,129 +196,186 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-st.markdown(
-    """
-<style>
-/* Kiosk: hide Streamlit chrome, tighten the frame to a fixed panel feel */
+_TOKENS_CSS = f"""
+:root {{
+    --bg-app: {BG_APP};
+    --bg-panel-raised: {BG_PANEL_RAISED};
+    --accent-primary: {ACCENT_PRIMARY};
+    --accent-secondary: {ACCENT_SECONDARY};
+    --accent-icon-chip: {ACCENT_ICON_CHIP};
+    --state-selected: {STATE_SELECTED};
+    --state-unselected: {STATE_UNSELECTED};
+    --status-ready-green: {STATUS_READY_GREEN};
+    --status-live-red: {STATUS_LIVE_RED};
+    --status-off: {STATUS_OFF};
+    --text-heading: {TEXT_HEADING};
+    --text-secondary: {TEXT_SECONDARY};
+    --progress-track: {PROGRESS_TRACK};
+    --progress-fill: {PROGRESS_FILL};
+    --tissue-nt: {DEMO_CLASS_COLORS[1]};
+    --tissue-tt: {DEMO_CLASS_COLORS[2]};
+    --tissue-bv: {DEMO_CLASS_COLORS[3]};
+    --tissue-bg: {DEMO_CLASS_COLORS[4]};
+}}
+"""
+
+_REST_CSS = """
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap');
+
 #MainMenu, header, footer, [data-testid="stToolbar"], [data-testid="stDecoration"]
     { display: none !important; }
 [data-testid="stSidebar"] { display: none !important; }
-[data-testid="stAppViewContainer"] { background: #0C0E14; }
-.block-container {
-    max-width: 1024px;
-    padding: 12px 18px 10px 18px;
+[data-testid="stAppViewContainer"] { background: var(--bg-app); }
+.block-container { max-width: 800px; padding: 8px 12px 6px 12px; }
+
+/* Global Background and Font */
+.stApp {
+    background-color: #04162a; 
+    color: #ffffff;
+    font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 }
 
-/* ── Two-tier type scale (spec §8) ───────────────────────────────────────── */
-html, body, [class*="css"] { font-family: "Inter", "Helvetica Neue", Arial, sans-serif; }
+.bv-screen-title { font-size: 20px; font-weight: 800; color: var(--text-heading); margin: 0; }
+.bv-screen-sub   { font-size: 12px; color: var(--text-secondary); margin: 1px 0 0 0; }
 
-.bv-screen-title { font-size: 26px; font-weight: 800; color: #F4F6FB; margin: 0; }
-.bv-screen-sub   { font-size: 15px; color: #9AA3B2; margin: 2px 0 0 0; }
-
-/* Hero number always on a solid contrasting chip — never dark-on-dark (§8) */
 .bv-chip {
-    display: inline-block;
-    background: #1B2130;
-    border-radius: 10px;
-    padding: 10px 16px;
-    margin: 4px 6px 4px 0;
-    border-left: 5px solid #4C5A72;
+    display: inline-block; background: var(--bg-panel-raised); border-radius: 9px;
+    padding: 7px 11px; margin: 3px 4px 3px 0; border-left: 4px solid var(--state-unselected);
 }
-.bv-chip .k { font-size: 12px; letter-spacing: .06em; text-transform: uppercase;
-              color: #9AA3B2; margin-bottom: 3px; }
-.bv-chip .v { font-size: 40px; font-weight: 800; color: #FFFFFF; line-height: 1.05; }
-.bv-chip .p { font-size: 13px; color: #B9C1CE; margin-top: 4px; max-width: 320px; }
-.bv-chip.tt   { border-left-color: #D85A30; }
-.bv-chip.good { border-left-color: #3C6E47; }
+.bv-chip .k { font-size: 10px; letter-spacing: .05em; text-transform: uppercase;
+              color: var(--text-secondary); margin-bottom: 2px; }
+.bv-chip .v { font-size: 24px; font-weight: 800; color: var(--text-heading); line-height: 1.05; }
+.bv-chip .p { font-size: 11px; color: var(--text-secondary); margin-top: 2px; max-width: 260px; }
+.bv-chip.tt   { border-left-color: var(--tissue-tt); }
+.bv-chip.good { border-left-color: var(--status-ready-green); }
 
-/* Persistent sparse-GT caption, anchored under the reference column (§2c, §4) */
 .bv-sparsenote {
-    background: #17202E;
-    border: 1px solid #2A3547;
-    border-radius: 8px;
-    padding: 9px 12px;
-    font-size: 13px;
-    color: #C7CEDA;
-    line-height: 1.35;
+    background: var(--bg-panel-raised); border-radius: 8px;
+    padding: 7px 10px 7px 8px; font-size: 12px; color: var(--text-secondary); line-height: 1.3;
+    display: flex; align-items: flex-start; gap: 7px;
 }
-
-/* Plain-language caption band (§2c) */
-.bv-captionband {
-    background: #14351F;
-    border-radius: 8px;
-    padding: 12px 16px;
-    font-size: 17px;
-    color: #EAF3EC;
-    line-height: 1.4;
+.bv-sparsenote .ic { color: var(--status-ready-green); flex-shrink: 0; }
+.bv-modelnote {
+    background: var(--bg-panel-raised); border-radius: 8px; padding: 6px 10px;
+    font-size: 12px; color: var(--text-secondary); margin-top: 4px;
 }
-
-/* Static latency badge — no animation, no colour change on a slow frame (§6, §9) */
-.bv-badge {
-    display: inline-flex; align-items: center; gap: 9px;
-    background: #1B2130; border-radius: 20px; padding: 7px 15px;
-    font-size: 14px; color: #F4F6FB; font-variant-numeric: tabular-nums;
-}
-.bv-badge .dot { width: 9px; height: 9px; border-radius: 50%; background: #5DCAA5; }
-
-.bv-unscripted {
+.bv-warn {
     background: #3A2A12; border: 1px solid #7A5A22; color: #F0C987;
-    border-radius: 8px; padding: 8px 14px; font-size: 14px; font-weight: 600;
+    border-radius: 8px; padding: 7px 10px; font-size: 12px; font-weight: 600;
+    margin-bottom: 6px;
 }
 
-.bv-panel-label { font-size: 14px; letter-spacing: .06em; text-transform: uppercase;
-                  color: #9AA3B2; margin: 0 0 4px 0; }
+.bv-badge {
+    display: inline-flex; align-items: center; gap: 7px;
+    background: var(--bg-panel-raised); border-radius: 18px; padding: 5px 12px;
+    font-size: 13px; color: var(--text-heading); font-variant-numeric: tabular-nums;
+}
+.bv-badge .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--status-ready-green); }
+.bv-badge .dot.live { background: var(--status-live-red); }
+.bv-badge .dot.off  { background: var(--status-off); }
 
-/* Touch targets — every button large (spec §7) */
+.bv-panel-label { font-size: 12px; letter-spacing: .05em; text-transform: uppercase;
+                  color: var(--text-secondary); margin: 0 0 3px 0; }
+
 .stButton > button {
-    width: 100%;
-    min-height: 58px;
-    font-size: 18px;
-    font-weight: 700;
-    border-radius: 12px;
-    border: 1px solid #2A3547;
-    background: #1B2130;
-    color: #F4F6FB;
+    width: 100%; min-height: 46px; font-size: 14px; font-weight: 700;
+    border-radius: 14px; border: none; background: var(--bg-panel-raised);
+    color: var(--text-heading);
 }
-.stButton > button:hover { border-color: #4C5A72; background: #232B3C; }
+.stButton > button:hover { filter: brightness(1.18); }
 .stButton > button:focus { box-shadow: none; }
+.stButton > button[kind="primary"] {
+    background: var(--accent-primary); border: none; color: var(--text-heading);
+}
 
-/* Legend chips */
-.bv-legend { display: inline-flex; align-items: center; gap: 6px; margin-right: 16px;
-             font-size: 14px; color: #E6EAF1; }
-.bv-legend .sw { width: 14px; height: 14px; border-radius: 3px; display: inline-block;
-                 border: 1px solid #3A4557; }
-</style>
-""",
-    unsafe_allow_html=True,
-)
+/* Mode-select tiles (Choose Mode screen) — fixed fills, not a toggle */
+.st-key-tile_static button   { background: var(--accent-primary) !important; }
+.st-key-tile_realtime button { background: var(--accent-secondary) !important; }
+
+/* Segmented toggles: A/B model switch, Ground Truth/RGB/Agreement, Speed */
+.st-key-toggle_model button[kind="secondary"],
+.st-key-toggle_view button[kind="secondary"],
+.st-key-toggle_speed button[kind="secondary"] {
+    background: var(--state-unselected) !important; color: var(--text-secondary) !important;
+}
+.st-key-toggle_model button[kind="primary"],
+.st-key-toggle_view button[kind="primary"],
+.st-key-toggle_speed button[kind="primary"] {
+    background: var(--state-selected) !important; color: var(--text-heading) !important;
+}
+
+/* Realtime Pause/Play — an always-on in-screen control, not a navigation button */
+.st-key-rt_playpause button { background: var(--state-selected) !important; }
+
+[data-testid="stImage"] img {
+    max-height: 190px; width: auto !important; display: block; margin: 0 auto;
+    object-fit: contain; border-radius: 6px;
+}
+
+.bv-legend { display: inline-flex; align-items: center; gap: 5px; margin-right: 12px;
+             font-size: 12px; color: var(--text-secondary); }
+.bv-legend .sw { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+
+[data-testid="stExpander"] { border: 1px solid var(--bg-panel-raised); border-radius: 10px;
+                              background: var(--bg-app); }
+
+[data-testid="stProgressBarTrack"] {
+    background-color: var(--progress-track) !important;
+    border-radius: 999px !important; overflow: hidden;
+}
+[data-testid="stProgressBarTrack"] > div {
+    background-color: var(--progress-fill) !important; border-radius: 999px !important;
+}
+
+/* Static screen's main section: big classification map + legend, filling
+   most of the viewport so only the metrics below need a scroll. */
+.st-key-static_main { display: flex; align-items: center; min-height: 62vh; }
+.st-key-static_main [data-testid="stHorizontalBlock"] { width: 100%; align-items: center; }
+.st-key-static_main [data-testid="stImage"] img {
+    max-height: 64vh !important; width: auto !important; max-width: 100%;
+    object-fit: contain; border-radius: 10px; display: block; margin: 0 auto;
+}
+"""
+
+st.markdown(f"<style>{_TOKENS_CSS}{_REST_CSS}</style>", unsafe_allow_html=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  Helpers reused from the simulator
+#  Data / model helpers
 # ═════════════════════════════════════════════════════════════════════════════
 def _hex_to_rgb(h: str) -> tuple:
     h = h.lstrip("#")
     return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
 
 
-CLASS_RGB = {k: _hex_to_rgb(v) for k, v in CLASS_COLORS.items()}
+CLASS_RGB = {k: _hex_to_rgb(v) for k, v in DEMO_CLASS_COLORS.items()}
 CLASS_RGB[0] = (24, 26, 34)   # unlabelled -> near-background
 
+STATIC_CLASS_RGB = {k: _hex_to_rgb(v) for k, v in STATIC_CLASS_COLORS.items()}
+STATIC_CLASS_RGB[0] = (24, 26, 34)
 
-def load_npz(source) -> tuple:
-    data = np.load(source, allow_pickle=False)
-    cube = data[NPZ_CUBE_KEY]
-    gt   = data[NPZ_GT_KEY] if NPZ_GT_KEY in data else None
+PSEUDO_RGB_BANDS = (88, 42, 7)   # ~709 R, ~539 G, ~479 B
+
+# Realtime indexes CASES, Static indexes its own STATIC_CASES — keyed by name
+# (not by passing the list itself) so each screen's cache entries can never
+# collide even though both use plain integer indices.
+CASE_LISTS = {"realtime": CASES, "static": STATIC_CASES}
+
+
+@st.cache_resource(show_spinner=False)
+def load_case_cube(list_name: str, case_idx: int) -> tuple:
+    """Load + normalise + crop one preset image. Cached — the file never changes."""
+    case = CASE_LISTS[list_name][case_idx]
+    data = np.load(case["image"], allow_pickle=False)
+    cube = minmax_normalise(data[NPZ_CUBE_KEY].astype(np.float32))
+    gt   = data[NPZ_GT_KEY]
+
+    if case["crop"]:
+        r0, c0, sz = case["crop"]
+        H, W = cube.shape[:2]
+        r0, c0 = max(0, min(r0, H - sz)), max(0, min(c0, W - sz))
+        cube, gt = cube[r0:r0 + sz, c0:c0 + sz], gt[r0:r0 + sz, c0:c0 + sz]
     return cube, gt
-
-
-def normalise(cube: np.ndarray) -> np.ndarray:
-    H, W, B = cube.shape
-    flat  = cube.reshape(-1, B).astype(np.float32)
-    mn    = flat.min(1, keepdims=True)
-    mx    = flat.max(1, keepdims=True)
-    denom = np.where(mx - mn == 0, 1.0, mx - mn)
-    return ((flat - mn) / denom).reshape(H, W, B)
 
 
 def make_pseudo_rgb(cube: np.ndarray) -> np.ndarray:
@@ -297,172 +383,251 @@ def make_pseudo_rgb(cube: np.ndarray) -> np.ndarray:
     return (np.clip(np.stack([r, g, b], -1), 0, 1) * 255).astype(np.uint8)
 
 
-def make_label_map(labels: np.ndarray) -> np.ndarray:
+def make_label_map(labels: np.ndarray, class_rgb: dict = CLASS_RGB) -> np.ndarray:
     out = np.zeros((*labels.shape, 3), dtype=np.uint8)
-    for lbl, color in CLASS_RGB.items():
+    for lbl, color in class_rgb.items():
         out[labels == lbl] = color
     return out
 
 
+def make_overlay(rgb: np.ndarray, pred: np.ndarray, alpha: float = OVERLAY_ALPHA) -> np.ndarray:
+    """Tint predicted NT/TT/BV pixels over the pseudo-RGB base; Background is
+    left as raw tissue colour so the overlay reads like an intraoperative
+    classification aid, not a flat colour map."""
+    out = rgb.astype(np.float32).copy()
+    for lbl in OVERLAY_CLASSES:
+        m = pred == lbl
+        out[m] = (1 - alpha) * out[m] + alpha * np.array(CLASS_RGB[lbl], dtype=np.float32)
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+
+def compute_live_metrics(pred: np.ndarray, gt: np.ndarray) -> dict:
+    """
+    F1-noBG, TT sensitivity, and agreement fraction — computed directly from
+    the confusion counts over LABELLED pixels only, following the Fabelo et
+    al. (2023) convention used throughout the thesis (see
+    brainvision/metrics.py). sklearn is deliberately not imported here: the
+    Pi build strips it out (see demo/requirements_demo.txt), so this
+    replicates macro-F1-excl-BG by hand from a 4x4 confusion matrix.
+    """
+    labelled = gt > 0
+    n_lab = int(labelled.sum())
+    if n_lab == 0:
+        return dict(n_labelled=0, n_unlabelled=int((~labelled).sum()),
+                    n_correct=0, n_incorrect=0, agree_frac=float("nan"),
+                    tt_total=0, tt_sens=float("nan"), f1_no_bg=float("nan"))
+
+    t = gt[labelled].astype(int) - 1     # 0=NT,1=TT,2=BV,3=BG
+    p = pred[labelled].astype(int) - 1
+    n = N_CLASSES
+    cm = np.zeros((n, n), dtype=np.int64)
+    for ti in range(n):
+        row = t == ti
+        for pi in range(n):
+            cm[ti, pi] = int((row & (p == pi)).sum())
+
+    f1 = np.zeros(n)
+    for i in range(n):
+        TP = cm[i, i]
+        FN = cm[i, :].sum() - TP
+        FP = cm[:, i].sum() - TP
+        f1[i] = (2 * TP) / (2 * TP + FP + FN + 1e-6)
+    f1_no_bg = float(f1[:3].mean())      # NT, TT, BV — exclude BG
+
+    tt_total = int((t == 1).sum())
+    tt_hit   = int(((t == 1) & (p == 1)).sum())
+    n_correct = int((t == p).sum())
+
+    return dict(
+        n_labelled=n_lab, n_unlabelled=int((~labelled).sum()),
+        n_correct=n_correct, n_incorrect=n_lab - n_correct,
+        agree_frac=n_correct / n_lab,
+        tt_total=tt_total,
+        tt_sens=(tt_hit / tt_total) if tt_total else float("nan"),
+        f1_no_bg=f1_no_bg,
+    )
+
+
 @st.cache_resource(show_spinner=False)
-def load_model(model_key: str, ckpt_path: str):
-    model_class, _ = MODEL_REGISTRY[model_key]
-    model = model_class(input_channels=N_DECIMATED_BANDS, n_classes=N_CLASSES)
-    state = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+def load_model(model_key: str):
+    spec = MODELS[model_key]
+    model = spec["cls"](input_channels=N_DECIMATED_BANDS, n_classes=N_CLASSES,
+                         **spec["kwargs"])
+    state = torch.load(spec["checkpoint"], map_location="cpu", weights_only=True)
     if isinstance(state, dict) and "model_state_dict" in state:
         state = state["model_state_dict"]
     model.load_state_dict(state)
-    model.eval()
+    model.eval().to(DEVICE)
     return model
 
 
-def infer_pixel(model, crop: np.ndarray, batch_size: int = 4096) -> np.ndarray:
-    H, W, B = crop.shape
-    flat  = crop.reshape(-1, B).astype(np.float32)
-    preds = np.empty(flat.shape[0], dtype=np.int64)
-    with torch.no_grad():
-        for s in range(0, flat.shape[0], batch_size):
-            e = min(s + batch_size, flat.shape[0])
-            preds[s:e] = model(torch.from_numpy(flat[s:e])).argmax(1).numpy() + 1
-    return preds.reshape(H, W)
-
-
-def infer_patch(model, crop: np.ndarray, patch_size: int,
-                batch_size: int = 512) -> np.ndarray:
-    H, W, B = crop.shape
-    P, pad = patch_size, patch_size // 2
-    padded = np.pad(crop.transpose(2, 0, 1),
-                    ((0, 0), (pad, pad), (pad, pad)), mode="reflect")
-    preds, idx, coords = np.empty(H * W, dtype=np.int64), 0, []
-    with torch.no_grad():
-        for r in range(H):
-            for c in range(W):
-                coords.append((r, c))
-                if len(coords) == batch_size or (r == H - 1 and c == W - 1):
-                    patches = np.stack([padded[:, rr:rr + P, cc:cc + P]
-                                        for rr, cc in coords]).astype(np.float32)
-                    out = model(torch.from_numpy(patches)).argmax(1).numpy() + 1
-                    preds[idx:idx + len(coords)] = out
-                    idx += len(coords)
-                    coords = []
-    return preds.reshape(H, W)
-
-
-def make_minimap(pseudo_rgb: np.ndarray, r0: int, c0: int,
-                 vp_h: int, vp_w: int) -> io.BytesIO:
-    H, W = pseudo_rgb.shape[:2]
-    fig, ax = plt.subplots(figsize=(4, 4 * H / W))
-    ax.imshow(pseudo_rgb)
-    ax.add_patch(mpatches.Rectangle((c0, r0), vp_w, vp_h,
-                 linewidth=2, edgecolor="#D85A30", facecolor="none"))
-    ax.axis("off")
-    fig.tight_layout(pad=0)
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=80, bbox_inches="tight", facecolor="#0C0E14")
-    plt.close(fig)
-    buf.seek(0)
-    return buf
+def infer(model, crop: np.ndarray, kind: str, patch_size: int = 11) -> tuple:
+    """Run inference on a full crop. Returns (pred_map[H,W], latency_ms)."""
+    t0 = time.perf_counter()
+    if kind == "pixel":
+        H, W, B = crop.shape
+        flat = crop.reshape(-1, B).astype(np.float32)
+        preds = np.empty(flat.shape[0], dtype=np.int64)
+        batch_size = 4096
+        with torch.no_grad():
+            for s in range(0, flat.shape[0], batch_size):
+                e = min(s + batch_size, flat.shape[0])
+                x = torch.from_numpy(flat[s:e]).to(DEVICE)
+                preds[s:e] = model(x).argmax(1).cpu().numpy() + 1
+        pred = preds.reshape(H, W)
+    else:
+        H, W, B = crop.shape
+        P, pad = patch_size, patch_size // 2
+        padded = np.pad(crop.transpose(2, 0, 1), ((0, 0), (pad, pad), (pad, pad)),
+                         mode="reflect")
+        preds, idx, coords, batch_size = np.empty(H * W, dtype=np.int64), 0, [], 512
+        with torch.no_grad():
+            for r in range(H):
+                for c in range(W):
+                    coords.append((r, c))
+                    if len(coords) == batch_size or (r == H - 1 and c == W - 1):
+                        patches = np.stack([padded[:, rr:rr + P, cc:cc + P]
+                                            for rr, cc in coords]).astype(np.float32)
+                        x = torch.from_numpy(patches).to(DEVICE)
+                        out = model(x).argmax(1).cpu().numpy() + 1
+                        preds[idx:idx + len(coords)] = out
+                        idx += len(coords)
+                        coords = []
+        pred = preds.reshape(H, W)
+    latency_ms = (time.perf_counter() - t0) * 1000.0
+    return pred, latency_ms
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  Agreement overlay + metrics (spec §4, §5)
+#  Static Comparison — one fixed model, shuffled across STATIC_CASES
 # ═════════════════════════════════════════════════════════════════════════════
-def make_agreement_map(pred: np.ndarray, gt: np.ndarray) -> np.ndarray:
-    """Recolour the prediction to three states: correct / incorrect / unlabelled.
-
-    Unlabelled pixels get a hatched grey texture so 'no ground truth here' never
-    reads as either an error or as simply absent (spec §4).
-    """
-    out = np.zeros((*pred.shape, 3), dtype=np.uint8)
-    labelled = gt > 0
-
-    out[labelled & (pred == gt)] = _hex_to_rgb(AGREE_COLORS["correct"][0])
-    out[labelled & (pred != gt)] = _hex_to_rgb(AGREE_COLORS["incorrect"][0])
-
-    base = np.array(_hex_to_rgb(AGREE_COLORS["unlabelled"][0]), dtype=np.uint8)
-    out[~labelled] = base
-    rr, cc = np.indices(pred.shape)
-    hatch = (~labelled) & (((rr + cc) % 8) < 2)          # diagonal stripes
-    out[hatch] = np.clip(base.astype(int) + 26, 0, 255).astype(np.uint8)
-    return out
-
-
-def agreement_stats(pred: np.ndarray, gt: np.ndarray) -> dict:
-    """Confusion-free summary over LABELLED pixels only (spec: sparse GT)."""
-    labelled = gt > 0
-    n_lab = int(labelled.sum())
-    n_correct = int((labelled & (pred == gt)).sum())
-
-    tt = gt == 2                                          # 2 = Tumour Tissue
-    tt_total = int(tt.sum())
-    tt_hit = int((tt & (pred == 2)).sum())
+@st.cache_resource(show_spinner=False)
+def compute_static(case_idx: int) -> dict:
+    cube, gt = load_case_cube("static", case_idx)
+    spec = MODELS[STATIC_MODEL_KEY]
+    model = load_model(STATIC_MODEL_KEY)
+    pred, latency_ms = infer(model, cube, spec["kind"],
+                              spec["kwargs"].get("patch_size", 11))
 
     return {
-        "n_labelled":   n_lab,
-        "n_unlabelled": int((~labelled).sum()),
-        "n_correct":    n_correct,
-        "n_incorrect":  n_lab - n_correct,
-        "agree_frac":   (n_correct / n_lab) if n_lab else float("nan"),
-        "tt_total":     tt_total,
-        "tt_sens":      (tt_hit / tt_total) if tt_total else float("nan"),
-    }
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-#  Per-case compute (cached in session_state so navigation stays instant)
-# ═════════════════════════════════════════════════════════════════════════════
-def compute_case(case: dict) -> dict | None:
-    store = st.session_state.setdefault("case_results", {})
-    if case["key"] in store:
-        return store[case["key"]]
-
-    img_path = Path(case["image"])
-    ckpt_path = Path(case["checkpoint"])
-    if not img_path.exists():
-        st.error(f"Case image not found: `{img_path}`")
-        return None
-    if not ckpt_path.exists():
-        st.error(f"Checkpoint not found: `{ckpt_path}`")
-        return None
-
-    with st.spinner(f"Running {case['title']}…"):
-        cube, gt = load_npz(img_path)
-        cube = normalise(cube)
-        if gt is None:
-            st.error(f"Case image `{img_path.name}` has no `labels` — needed for "
-                     f"the agreement view.")
-            return None
-
-        if case["crop"]:
-            r0, c0, sz = case["crop"]
-            H, W = cube.shape[:2]
-            r0, c0 = min(r0, H - sz), min(c0, W - sz)
-            r0, c0 = max(0, r0), max(0, c0)
-            cube = cube[r0:r0 + sz, c0:c0 + sz]
-            gt   = gt[r0:r0 + sz, c0:c0 + sz]
-
-        _, model_type = MODEL_REGISTRY[case["model"]]
-        model = load_model(case["model"], str(ckpt_path))
-
-        t0 = time.perf_counter()
-        if model_type == "pixel":
-            pred = infer_pixel(model, cube)
-        else:
-            pred = infer_patch(model, cube, case["patch_size"] or 11)
-        latency_ms = (time.perf_counter() - t0) * 1000.0
-
-    result = {
-        "rgb":        make_pseudo_rgb(cube),
-        "gt_map":     make_label_map(gt),
-        "pred_map":   make_label_map(pred),
-        "agree_map":  make_agreement_map(pred, gt),
+        "pred_map":   make_label_map(pred, STATIC_CLASS_RGB),
         "latency_ms": latency_ms,
-        "shape":      cube.shape,
-        "model_type": model_type,
-        "stats":      agreement_stats(pred, gt),
+        "metrics":    compute_live_metrics(pred, gt),
     }
-    store[case["key"]] = result
-    return result
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Realtime Demo — deterministic scan path + one-shot Model A prediction
+# ═════════════════════════════════════════════════════════════════════════════
+def build_scan_path(h: int, w: int, n_steps: int = SCAN_N_STEPS) -> np.ndarray:
+    """
+    Deterministic serpentine sweep across an HxW crop, mimicking a hand-held
+    probe passing over exposed tissue. Pure function of (h, w) — no RNG, no
+    clock — so the path is byte-identical on every run and every rehearsal.
+    """
+    t = np.linspace(0.0, 1.0, n_steps)
+    margin_r, margin_c = h * 0.16, w * 0.10
+    col = margin_c + t * (w - 2 * margin_c)
+    row = margin_r + (h - 2 * margin_r) * (0.5 - 0.5 * np.cos(2 * np.pi * 1.5 * t))
+    return np.stack([row, col], axis=1)
+
+
+def compute_viewport_size(h: int, w: int) -> tuple:
+    """Fixed pixel-size viewport box, clamped to the crop — never shrinks near
+    the edges (the path margins in build_scan_path already keep it in-bounds)."""
+    edge = int(np.clip(min(h, w) * VIEWPORT_FRAC, VIEWPORT_MIN_H, VIEWPORT_MAX_H))
+    vp_h = min(edge, h)
+    vp_w = min(int(edge * VIEWPORT_ASPECT), w)
+    return vp_h, vp_w
+
+
+@st.cache_resource(show_spinner=False)
+def compute_realtime(case_idx: int) -> dict:
+    """
+    Precompute for the Realtime screen: the scan path is a pure function of
+    the image size (build_scan_path — fixed forever, no RNG). For every step
+    along it we run a REAL inference pass over just that step's
+    viewport-sized crop, so the latency badge reflects per-viewport timing,
+    never a one-shot full-frame number. Model A (FabeloDNN) classifies each
+    pixel independently of its neighbours, so a viewport crop's predictions
+    are identical to slicing the equivalent region out of a full-frame
+    prediction — precomputing every step here means playback (even at
+    "Fast") never has to wait on inference during the animation loop, which
+    matters on the Pi 5's CPU.
+    """
+    cube, gt = load_case_cube("realtime", case_idx)
+    h, w = cube.shape[:2]
+    model = load_model(MODEL_A_KEY)
+
+    # Plain pseudo-RGB of the full scene — the minimap's job is spatial
+    # orientation ("where is the viewport"), not a second copy of the
+    # classified output already shown at full size in the primary display.
+    rgb_full = make_pseudo_rgb(cube)
+
+    path = build_scan_path(h, w)
+    vp_h, vp_w = compute_viewport_size(h, w)
+
+    frames = []
+    for row, col in path:
+        r0 = int(np.clip(row - vp_h / 2, 0, h - vp_h))
+        c0 = int(np.clip(col - vp_w / 2, 0, w - vp_w))
+        crop = cube[r0:r0 + vp_h, c0:c0 + vp_w]
+        pred, latency_ms = infer(model, crop, MODELS[MODEL_A_KEY]["kind"])
+        frames.append({
+            "overlay":    make_overlay(make_pseudo_rgb(crop), pred),
+            "latency_ms": latency_ms,
+            "box":        (r0, c0, r0 + vp_h, c0 + vp_w),
+        })
+
+    return {"frames": frames, "rgb_full": rgb_full, "shape": (h, w)}
+
+
+def compose_viewport_frame(frame: dict, rgb_full: np.ndarray, full_shape: tuple,
+                            display_w: int = 760) -> np.ndarray:
+    """Enlarge the current viewport crop's live classified prediction to fill
+    the primary display, and paste a minimap — the plain pseudo-RGB scene
+    (not classification colours — the minimap is for orientation, the
+    primary view already shows the model's output) with a rectangle over
+    the current viewport — into its top-right corner. The rectangle's
+    position is derived from the same box used to build this frame's crop,
+    so the two views can never disagree about where the camera currently is."""
+    overlay = frame["overlay"]
+    h_sub, w_sub = overlay.shape[:2]
+    display_h = max(1, int(display_w * h_sub / w_sub))
+    main = Image.fromarray(overlay).resize((display_w, display_h), Image.NEAREST)
+
+    H, W = full_shape
+    mini_w = MINIMAP_SIZE
+    mini_h = max(1, int(mini_w * H / W))
+    mini = Image.fromarray(rgb_full).resize((mini_w, mini_h), Image.BILINEAR)
+    draw = ImageDraw.Draw(mini)
+    r0, c0, r1, c1 = frame["box"]
+    sx, sy = mini_w / W, mini_h / H
+    draw.rectangle([c0 * sx, r0 * sy, c1 * sx, r1 * sy], outline=SCAN_MARKER, width=2)
+
+    border = 3
+    framed = Image.new("RGB", (mini_w + 2 * border, mini_h + 2 * border), SCAN_MARKER)
+    framed.paste(mini, (border, border))
+    pad = 10
+    main.paste(framed, (display_w - framed.width - pad, pad))
+    return np.array(main)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  System-ready check (real, not hardcoded)
+# ═════════════════════════════════════════════════════════════════════════════
+def system_ready() -> tuple:
+    model_a_ok      = Path(MODELS[MODEL_A_KEY]["checkpoint"]).exists()
+    static_model_ok = Path(MODELS[STATIC_MODEL_KEY]["checkpoint"]).exists()
+    data_ok         = all(Path(c["image"]).exists() for c in CASES + STATIC_CASES)
+    ready = model_a_ok and static_model_ok and data_ok
+    if ready:
+        return True, "Raspberry Pi 5 — System Ready"
+    missing = []
+    if not model_a_ok:      missing.append("Realtime model checkpoint")
+    if not static_model_ok: missing.append("Static model checkpoint")
+    if not data_ok:         missing.append("preset images")
+    return False, "System Degraded — missing " + ", ".join(missing)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -472,415 +637,428 @@ def goto(screen: str) -> None:
     st.session_state.screen = screen
 
 
-def home_row(subtitle: str = "") -> None:
-    """Fixed home control, same corner on every screen (spec §1, §7)."""
-    left, right = st.columns([1, 9])
+def top_bar(title: str, show_home: bool = True) -> None:
+    left, mid = st.columns([1, 8])
     with left:
-        if st.button("⌂", key=f"home_{st.session_state.screen}",
-                     help="Back to Case Select"):
-            goto("cases")
+        if show_home and st.button("⌂", key=f"home_{st.session_state.screen}",
+                                    help="Home"):
+            goto("welcome")
             st.rerun()
-    with right:
-        if subtitle:
-            st.markdown(f"<div class='bv-screen-sub'>{subtitle}</div>",
-                        unsafe_allow_html=True)
-
-
-def chip(kind: str, value: str, css: str = "") -> str:
-    label, plain = METRIC_PLAIN[kind]
-    return (f"<div class='bv-chip {css}'><div class='k'>{label}</div>"
-            f"<div class='v'>{value}</div><div class='p'>{plain}</div></div>")
-
-
-def latency_badge(ms: float) -> str:
-    # Static, unremarkable number — reads as a measurement, not an error state
-    # (spec §6, §9). No colour change or animation on a slow frame.
-    if ms < 1000:
-        rate = f"&nbsp;&nbsp;/&nbsp;&nbsp;{1000.0 / ms:.0f} fps" if ms > 0 else ""
-        return (f"<div class='bv-badge'><span class='dot'></span>"
-                f"{ms:.0f} ms / frame{rate}</div>")
-    return (f"<div class='bv-badge'><span class='dot'></span>"
-            f"{ms / 1000:.1f} s / frame</div>")
-
-
-def tissue_legend() -> str:
-    return "".join(
-        f"<span class='bv-legend'><span class='sw' style='background:{CLASS_COLORS[l]}'>"
-        f"</span>{CLASS_NAMES[l]}</span>"
-        for l in sorted(CLASS_COLORS)
-    )
-
-
-def agreement_legend() -> str:
-    return "".join(
-        f"<span class='bv-legend'><span class='sw' style='background:{hexc}'></span>"
-        f"{glyph} {word}</span>"
-        for hexc, glyph, word in AGREE_COLORS.values()
-    )
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-#  Screen 2a — Title / Idle (spec §2a)
-# ═════════════════════════════════════════════════════════════════════════════
-def screen_idle() -> None:
-    st.markdown("<div style='height:70px'></div>", unsafe_allow_html=True)
-    st.markdown(
-        "<div style='text-align:center'>"
-        "<div class='bv-screen-title' style='font-size:34px'>"
-        "Real-Time Intraoperative Tissue Classification</div>"
-        "<div class='bv-screen-sub' style='font-size:17px;margin-top:8px'>"
-        "Hyperspectral imaging + deep learning</div></div>",
-        unsafe_allow_html=True,
-    )
-    st.markdown("<div style='height:50px'></div>", unsafe_allow_html=True)
-    _, mid, _ = st.columns([2, 3, 2])
     with mid:
-        if st.button("Begin Demo", key="begin"):
-            goto("cases")
+        st.markdown(f"<div class='bv-screen-title'>{title}</div>",
+                    unsafe_allow_html=True)
+
+
+def latency_badge(ms: float, live: bool | None = None) -> str:
+    dot_cls = "dot"
+    if live is True:  dot_cls = "dot live"
+    if live is False: dot_cls = "dot off"
+    if ms < 1000:
+        return f"<div class='bv-badge'><span class='{dot_cls}'></span>{ms:.0f} ms</div>"
+    return f"<div class='bv-badge'><span class='{dot_cls}'></span>{ms / 1000:.1f} s</div>"
+
+
+def classification_legend() -> str:
+    """Big 'Classification' legend for the Static screen's main section —
+    one row per class: a solid swatch plus its plain name, sized to read
+    from across a room."""
+    rows = "".join(
+        f"<div style='display:flex;align-items:center;gap:12px;margin-bottom:18px'>"
+        f"<span style='width:28px;height:28px;border-radius:6px;flex-shrink:0;"
+        f"background:{STATIC_CLASS_COLORS[l]}'></span>"
+        f"<span style='font-size:17px;font-weight:600;color:{TEXT_HEADING}'>"
+        f"{CLASS_NAMES[l].split(' (')[0]}</span></div>"
+        for l in sorted(STATIC_CLASS_COLORS)
+    )
+    return (
+        f"<div style='display:flex;flex-direction:column;justify-content:center'>"
+        f"<div style='font-size:20px;font-weight:800;color:{TEXT_HEADING};"
+        f"margin-bottom:16px'>Classification</div>{rows}</div>"
+    )
+
+
+def tissue_legend_vertical() -> str:
+    """Stacked, right-aligned legend for the Realtime control row — same
+    class set and colours as tissue_legend(), short labels, one per line."""
+    rows = "".join(
+        f"<div style='display:flex;align-items:center;justify-content:flex-end;"
+        f"gap:6px;font-size:11px;color:{TEXT_SECONDARY};margin-bottom:2px'>"
+        f"{CLASS_NAMES[l].split(' (')[0]}<span class='sw' "
+        f"style='background:{DEMO_CLASS_COLORS[l]}'></span></div>"
+        for l in sorted(DEMO_CLASS_COLORS)
+    )
+    return f"<div>{rows}</div>"
+
+
+def image_switch_pill(idx: int, font_size: int = 14) -> str:
+    """Raised pill label shared by every image-switch control: 'Image X/3 — Title'."""
+    return (
+        f"<div style='text-align:center'><span style='display:inline-block;"
+        f"background:{BG_PANEL_RAISED};border-radius:999px;padding:6px 14px;"
+        f"color:{TEXT_HEADING};font-size:{font_size}px;font-weight:700;"
+        f"white-space:nowrap'>Image {idx + 1}/{len(CASES)} — {CASES[idx]['title']}"
+        f"</span></div>"
+    )
+
+
+def chip(label: str, value: str, caption: str, css: str = "") -> str:
+    return (f"<div class='bv-chip {css}'><div class='k'>{label}</div>"
+            f"<div class='v'>{value}</div><div class='p'>{caption}</div></div>")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Screen 1 — Welcome / Idle
+# ═════════════════════════════════════════════════════════════════════════════
+def screen_welcome() -> None:
+    ready, status_text = system_ready()
+    dot_color = STATUS_READY_GREEN if ready else STATUS_LIVE_RED
+
+    # Compact header matching the UI design
+    st.markdown("""
+    <div style='display: flex; align-items: center; border-bottom: 1px solid var(--bg-panel-raised); padding-bottom: 8px; margin-bottom: 15px;'>
+        <div style='font-size: 28px; color: var(--accent-primary); margin-right: 12px;'>🧠</div>
+        <div>
+            <p style='font-size: 18px; font-weight: 800; margin: 0; line-height: 1.1; color: var(--text-heading);'>Brain Tumour Classification</p>
+            <p style='font-size: 12px; color: var(--text-secondary); margin: 0;'>Hyperspectral Imaging Demo</p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Split layout optimized for landscape 7-inch LCD
+    col1, col2 = st.columns([1, 1.1], gap="medium")
+
+    with col1:
+        try:
+            # Referenced verbatim as requested
+            st.image("image_7ae572.png", use_container_width=True)
+        except Exception:
+            st.info("ℹ️ Place 'image_7ae572.png' here")
+
+    with col2:
+        # Hero text scaled down for 800x480 
+        st.markdown(
+            "<div style='font-size: 26px; font-weight: 800; line-height: 1.2; margin-top: 5px; margin-bottom: 12px; color: var(--text-heading);'>"
+            "Real-time AI for<br>Safer Surgery</div>"
+            "<div style='font-size: 14px; color: var(--text-secondary); line-height: 1.4; margin-bottom: 25px; max-width: 95%;'>"
+            "Classifying brain tissue during surgery using hyperspectral imaging and deep learning.</div>",
+            unsafe_allow_html=True
+        )
+        
+        # Original functioning button (styled automatically by your existing _REST_CSS)
+        if st.button("Begin Demo →", key="begin", type="primary"):
+            goto("mode")
             st.rerun()
-    st.markdown("<div style='height:60px'></div>", unsafe_allow_html=True)
+
+    # Footer containing dynamic system check
+    st.markdown("<div style='height: 15px'></div>", unsafe_allow_html=True)
     st.markdown(
-        "<div style='text-align:center;color:#8A93A3;font-size:14px'>"
-        "●&nbsp; Raspberry Pi 5 — System Ready</div>",
+        f"<div style='color: var(--text-heading); font-size: 12px; display: flex; align-items: center;'>"
+        f"<span style='color: {dot_color}; font-size: 14px; margin-right: 8px;'>●</span> {status_text}</div>",
         unsafe_allow_html=True,
     )
-
+    
+    # Preserve original missing-files caption
+    if not ready:
+        st.caption("Not independently verified as running on Pi 5 hardware — "
+                   "this check only confirms model + data files are present.")
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  Screen 2b — Case Select (spec §2b) — no ordinal step counter
+#  Screen 2 — Choose Mode
 # ═════════════════════════════════════════════════════════════════════════════
-def screen_cases() -> None:
-    home_row()
-    st.markdown("<div class='bv-screen-title'>Choose a Case</div>",
-                unsafe_allow_html=True)
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+def screen_mode() -> None:
+    # Inject CSS for the rich tiles and overlay technique tailored to 800x480
+    st.markdown("""
+    <style>
+    /* Turn the containers into relative bounding boxes */
+    .st-key-tile_static, .st-key-tile_realtime {
+        position: relative;
+        height: 96px;
+        margin-bottom: 8px;
+    }
 
-    cols = st.columns(3, gap="medium")
-    for col, (i, case) in zip(cols, enumerate(CASES)):
-        with col:
-            thumb = _case_thumb(case["key"], case["image"])
-            if thumb is not None:
-                st.image(thumb, use_container_width=True)
-            st.markdown(f"<div class='bv-panel-label'>{case['role']}</div>",
-                        unsafe_allow_html=True)
-            if st.button(case["title"], key=f"case_{case['key']}"):
-                st.session_state.case_idx = i
-                goto("live")
-                st.rerun()
+    .st-key-mode_static, .st-key-mode_realtime {
+        position: absolute !important;
+        top: 0 !important;
+        left: 0 !important;
+        height: 96px !important;
+        right: 0 !important;
+        z-index: 10 !important;
+        opacity: 1 !important;
+    }
+    
+    /* Stretch invisible Streamlit buttons perfectly over the custom HTML cards */
+    .st-key-tile_static .stButton, .st-key-tile_realtime .stButton {
+        position: absolute !important;
+        top: 0 !important;
+        left: 0 !important;
+        bottom: 0 !important;
+        right: 0 !important;
+        z-index: 10 !important;
+        opacity: 0 !important;
+    }
+    
+    .st-key-tile_static .stButton button, .st-key-tile_realtime .stButton button {
+        width: 100% !important;
+        height: 100% !important;
+        padding: 0 !important;
+        cursor: pointer !important;
+    }
+    
+    /* Card visual styling */
+    .demo-card {
+        border-radius: 12px; 
+        padding: 0 16px; 
+        display: flex; 
+        align-items: center; 
+        height: 96px; /* Sized for 800x480 layout */
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    .card-static { background: var(--accent-primary); }
+    .card-realtime { background: var(--accent-secondary); }
+    
+    .icon-box {
+        width: 60px; 
+        height: 60px; 
+        border-radius: 12px; 
+        display: flex; 
+        align-items: center; 
+        justify-content: center; 
+        font-size: 28px; 
+        margin-right: 20px;
+        background: rgba(255,255,255,0.15);
+        color: white;
+    }
+    
+    .text-box { flex-grow: 1; }
+    .card-title { font-size: 22px; font-weight: 700; color: white; margin-bottom: 4px; line-height: 1.1; }
+    .card-desc { font-size: 15px; color: rgba(255,255,255,0.85); line-height: 1.3; margin: 0; }
+    .chevron { font-size: 30px; font-weight: 800; color: white; opacity: 0.9; }
+    </style>
+    """, unsafe_allow_html=True)
 
-    st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
-    _, right = st.columns([2, 1])
-    with right:
-        if st.button("Live Mode (bonus)", key="cases_livemode"):
-            st.session_state.freepan_return = "cases"
-            goto("freepan")
+    # Header Section
+    c_head, c_home = st.columns([7, 1])
+    with c_head:
+        st.markdown("""
+        <div style='display: flex; align-items: center; height: 100%; margin-top: 5px;'>
+            <div style='font-size: 26px; color: var(--accent-primary); margin-right: 12px;'>🧠</div>
+            <div style='font-size: 18px; font-weight: 700; color: var(--text-heading);'>Brain Tumour Classification</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with c_home:
+        if st.button("⌂", key="home_mode", help="Home"):
+            goto("welcome")
+            st.rerun()
+            
+    st.markdown("<div style='border-bottom: 1px solid var(--bg-panel-raised); margin-bottom: 25px; margin-top: 10px;'></div>", unsafe_allow_html=True)
+
+    # Title
+    st.markdown("<div style='font-size:24px; font-weight:bold; text-align:center; margin-bottom: 25px; color: var(--text-heading);'>Choose a Demo Mode</div>", unsafe_allow_html=True)
+
+    # Tile 1: Static Image
+    with st.container(key="tile_static"):
+        st.markdown("""
+        <div class="demo-card card-static">
+            <div class="icon-box">🖼️</div>
+            <div class="text-box">
+                <div class="card-title">Static Image</div>
+                <div class="card-desc">Compare prediction against fixed ground truth.</div>
+            </div>
+            <div class="chevron">❯</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Invisible overlay button handling the routing
+        if st.button("hidden_static", key="mode_static", use_container_width=True):
+            goto("static")
+            st.rerun()
+
+    # Tile 2: Realtime Demo
+    with st.container(key="tile_realtime"):
+        st.markdown("""
+        <div class="demo-card card-realtime">
+            <div class="icon-box">〰️</div>
+            <div class="text-box">
+                <div class="card-title">Realtime Demo</div>
+                <div class="card-desc">Continuous inference along a moving scan path.</div>
+            </div>
+            <div class="chevron">❯</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Invisible overlay button handling the routing
+        if st.button("hidden_realtime", key="mode_realtime", use_container_width=True):
+            goto("realtime")
             st.rerun()
 
 
-@st.cache_data(show_spinner=False)
-def _case_thumb(case_key: str, image_path: str) -> np.ndarray | None:
-    path = Path(image_path)
-    if not path.exists():
-        return None
-    cube, _ = load_npz(path)
-    return make_pseudo_rgb(normalise(cube))
-
-
 # ═════════════════════════════════════════════════════════════════════════════
-#  Screen 2c — Live Inference (the hero screen)
+#  Screen 3 — Static Comparison
 # ═════════════════════════════════════════════════════════════════════════════
-def screen_live() -> None:
-    case = CASES[st.session_state.case_idx]
-    res  = compute_case(case)
-    home_row()
-    if res is None:
-        return
+def screen_static() -> None:
+    if STATIC_MODEL_IS_FALLBACK:
+        st.markdown(
+            "<div class='bv-warn'>1D-CNN-Hu (CE, no class-balancing) checkpoint not "
+            "found — using the CE + balanced checkpoint instead.</div>",
+            unsafe_allow_html=True,
+        )
 
-    # Header: case title + latency badge (badge is secondary — spec §3, §6)
-    h_left, h_right = st.columns([3, 2])
-    with h_left:
-        st.markdown(f"<div class='bv-screen-title'>{case['title']}</div>",
-                    unsafe_allow_html=True)
-    with h_right:
-        st.markdown(f"<div style='text-align:right'>{latency_badge(res['latency_ms'])}</div>",
-                    unsafe_allow_html=True)
+    case_idx = st.session_state.setdefault("static_case_idx", 0)
 
-    primary = st.session_state.setdefault("primary_view", "prediction")
-    show_agree = st.session_state.setdefault("show_agreement", False)
-
-    # ── Primary (large) + reference thumbnails (spec §2c asymmetric layout) ──
-    big, side = st.columns([7, 3], gap="medium")
-
-    with big:
-        if primary == "prediction":
-            tog_l, tog_r = st.columns([3, 2])
-            with tog_l:
-                st.markdown("<div class='bv-panel-label'>Model prediction</div>",
-                            unsafe_allow_html=True)
-            with tog_r:
-                if st.button(("Show: Agreement" if not show_agree else "Show: Prediction"),
-                             key="agree_toggle"):
-                    st.session_state.show_agreement = not show_agree
-                    st.rerun()
-            st.image(res["agree_map"] if show_agree else res["pred_map"],
-                     use_container_width=True)
-            st.markdown(
-                (agreement_legend() if show_agree else tissue_legend()),
-                unsafe_allow_html=True,
-            )
-        elif primary == "gt":
-            st.markdown("<div class='bv-panel-label'>Ground truth (labelled pixels)</div>",
-                        unsafe_allow_html=True)
-            st.image(res["gt_map"], use_container_width=True)
-            st.markdown(tissue_legend(), unsafe_allow_html=True)
-        else:  # rgb
-            st.markdown("<div class='bv-panel-label'>Pseudo-RGB</div>",
-                        unsafe_allow_html=True)
-            st.image(res["rgb"], use_container_width=True)
-
-    with side:
-        # tap a thumbnail to promote it into the primary slot (spec §2c, §7)
-        st.markdown("<div class='bv-panel-label'>Ground truth</div>",
-                    unsafe_allow_html=True)
-        st.image(res["gt_map"], use_container_width=True)
-        if st.button("View ground truth", key="promote_gt"):
-            st.session_state.primary_view = "gt" if primary != "gt" else "prediction"
+    # ── Top bar: home | title | shuffle | latency ──────────────────────────
+    c_home, c_title, c_shuffle, c_lat = st.columns([0.6, 3.4, 0.6, 1.4])
+    with c_home:
+        if st.button("⌂", key="home_static", help="Home"):
+            goto("welcome")
+            st.rerun()
+    with c_shuffle:
+        if st.button("🔀", key="static_shuffle", help="Shuffle image"):
+            if len(STATIC_CASES) > 1:
+                case_idx = random.choice(
+                    [i for i in range(len(STATIC_CASES)) if i != case_idx])
+            st.session_state.static_case_idx = case_idx
             st.rerun()
 
-        st.markdown("<div class='bv-panel-label'>Pseudo-RGB</div>",
-                    unsafe_allow_html=True)
-        st.image(res["rgb"], use_container_width=True)
-        if st.button("View pseudo-RGB", key="promote_rgb"):
-            st.session_state.primary_view = "rgb" if primary != "rgb" else "prediction"
-            st.rerun()
+    result = compute_static(case_idx)
 
-        # Sparse-GT note anchored under the reference column (spec §2c, §4)
-        st.markdown(f"<div class='bv-sparsenote'>{SPARSE_GT_NOTE}</div>",
+    with c_title:
+        st.markdown("<div class='bv-screen-title' style='padding-top:8px'>Static Comparison</div>",
+                    unsafe_allow_html=True)
+    with c_lat:
+        st.markdown(f"<div style='padding-top:5px'>{latency_badge(result['latency_ms'])}</div>",
                     unsafe_allow_html=True)
 
-    # ── Plain-language caption band (spec §2c) ──────────────────────────────
-    st.markdown(f"<div class='bv-captionband'>{case['caption']}</div>",
-                unsafe_allow_html=True)
+    # ── Main: big classification map + legend, fills most of the screen ────
+    with st.container(key="static_main"):
+        col_img, col_legend = st.columns([3.4, 1], gap="medium")
+        with col_img:
+            st.image(result["pred_map"], use_container_width=True)
+        with col_legend:
+            st.markdown(classification_legend(), unsafe_allow_html=True)
 
-    # ── Metric chips — every number paired with one consequence line (§5) ───
-    s = res["stats"]
+    # ── Metrics — below the fold ────────────────────────────────────────────
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+    m = result["metrics"]
     st.markdown(
-        chip("agree", f"{s['agree_frac'] * 100:.0f}%", css="good")
-        + chip("tt_sens",
-               ("n/a" if s["tt_total"] == 0 else f"{s['tt_sens'] * 100:.0f}%"),
-               css="tt")
-        + chip("latency", f"{res['latency_ms']:.0f} ms"),
+        chip("F1-noBG", f"{m['f1_no_bg'] * 100:.0f}%", "Overall tissue agreement", "good")
+        + chip("TT Sensitivity",
+               "n/a" if m["tt_total"] == 0 else f"{m['tt_sens'] * 100:.0f}%",
+               "Tumour tissue detected", "tt")
+        + chip("Agreement (labelled px)", f"{m['agree_frac'] * 100:.0f}%",
+               "Accuracy on the pixels that were actually scored"),
         unsafe_allow_html=True,
     )
-    st.caption(
-        f"{s['n_labelled']:,} labelled px scored · {s['n_incorrect']:,} disagree "
-        f"· {s['n_unlabelled']:,} unlabelled px not scored · "
-        f"{res['shape'][0]}×{res['shape'][1]}×{N_DECIMATED_BANDS}"
+    fallback_note = (" — CE + no-balancing weights unavailable, showing the "
+                      "CE + balanced checkpoint instead" if STATIC_MODEL_IS_FALLBACK else "")
+    st.markdown(
+        f"<div class='bv-modelnote'>{MODELS[STATIC_MODEL_KEY]['arch_label']}"
+        f"{fallback_note}</div>",
+        unsafe_allow_html=True,
     )
-
-    # ── Footer nav (spec §2c) — Prev / Compare All / Next, no counter ───────
-    f1, f2, f3 = st.columns(3, gap="small")
-    with f1:
-        if st.button("◀  Prev case", key="prev_case"):
-            _step_case(-1)
-            st.rerun()
-    with f2:
-        if st.button("Compare All Cases", key="to_summary"):
-            goto("summary")
-            st.rerun()
-    with f3:
-        if st.button("Next case  ▶", key="next_case"):
-            _step_case(+1)
-            st.rerun()
-
-    st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
-    _, r = st.columns([3, 1])
-    with r:
-        if st.button("Live Mode (bonus)", key="live_to_freepan"):
-            st.session_state.freepan_return = "live"
-            goto("freepan")
-            st.rerun()
-
-
-def _step_case(delta: int) -> None:
-    st.session_state.case_idx = (st.session_state.case_idx + delta) % len(CASES)
-    st.session_state.primary_view = "prediction"
-    st.session_state.show_agreement = False
-
+    st.caption(f"{m['n_labelled']:,} labelled px scored · {m['n_incorrect']:,} disagree "
+               f"· {m['n_unlabelled']:,} unlabelled px not scored")
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  Screen 2d — Summary / Pareto scatter (spec §2d)
+#  Screen 4 — Realtime Demo
 # ═════════════════════════════════════════════════════════════════════════════
-def screen_summary() -> None:
-    home_row()
-    st.markdown("<div class='bv-screen-title'>Accuracy vs. Speed Trade-off</div>",
-                unsafe_allow_html=True)
+def screen_realtime() -> None:
+    playing  = st.session_state.setdefault("rt_playing", True)
+    speed    = st.session_state.setdefault("rt_speed", "Normal")
+    case_idx = st.session_state.setdefault("rt_case_idx", 0)
 
-    fig = _pareto_figure()
-    st.pyplot(fig, use_container_width=True)
-    plt.close(fig)
-
-    idx = st.session_state.setdefault("finding_idx", 0)
-    st.markdown(f"<div class='bv-captionband'>{SUMMARY_FINDINGS[idx]}</div>",
-                unsafe_allow_html=True)
-
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        if st.button("◀  Back to Cases", key="summary_back"):
-            goto("cases")
+    # ── Top bar: home | title | image switch (compact, grouped) | latency | live ──
+    c_home, c_title, c_prev, c_label, c_next, c_lat, c_live = st.columns(
+        [0.6, 1.7, 0.45, 2.7, 0.45, 1.15, 1.0]
+    )
+    with c_home:
+        if st.button("⌂", key="home_realtime", help="Home"):
+            goto("welcome")
             st.rerun()
-    with c2:
-        if st.button("Next finding  ▶", key="cycle_finding"):
-            st.session_state.finding_idx = (idx + 1) % len(SUMMARY_FINDINGS)
-            st.rerun()
+    with c_prev:
+        if st.button("◀", key="rt_case_prev"):
+            case_idx = (case_idx - 1) % len(CASES)
+    with c_next:
+        if st.button("▶", key="rt_case_next"):
+            case_idx = (case_idx + 1) % len(CASES)
+    st.session_state.rt_case_idx = case_idx
 
+    # Image switch, play state and scan progress are independent: only the
+    # case selection resolved above feeds this lookup.
+    rt = compute_realtime(case_idx)
+    n_steps = len(rt["frames"])
+    pos_key = f"rt_pos_{case_idx}"
+    pos = st.session_state.setdefault(pos_key, 0) % n_steps
+    frame = rt["frames"][pos]
 
-def _pareto_figure():
-    fig, ax = plt.subplots(figsize=(9.2, 4.6))
-    fig.patch.set_facecolor("#0C0E14")
-    ax.set_facecolor("#0C0E14")
-
-    # viable region: latency <= viability line
-    ax.axvspan(1e-3, VIABILITY_LINE_S, color="#1C3A2A", alpha=0.55, zorder=0)
-    ax.axvline(VIABILITY_LINE_S, color="#5DCAA5", lw=1.2, ls="--")
-    ax.text(VIABILITY_LINE_S, 0.5, "  60 s clinical-viability line",
-            rotation=90, va="bottom", ha="left", color="#5DCAA5", fontsize=9)
-
-    for label, lat, f1, params, viable, tt in PARETO_POINTS:
-        if viable:
-            ax.scatter(lat, f1, s=260, marker="*", color="#F0C987",
-                       edgecolor="#FFFFFF", linewidth=0.8, zorder=5)
-            note = f"{label}\n{params:,} params"
-            if tt is not None:
-                note += f"\nTT sens {tt * 100:.0f}%"
-            ax.annotate(note, (lat, f1), textcoords="offset points", xytext=(10, -6),
-                        color="#F4F6FB", fontsize=8.5, va="top")
-        else:
-            ax.scatter(lat, f1, s=90, color="#7F8BA3", zorder=4)
-            ax.annotate(f"{label}", (lat, f1), textcoords="offset points",
-                        xytext=(8, 4), color="#9AA3B2", fontsize=8.5)
-
-    ax.set_xscale("log")
-    ax.set_xlim(0.01, 200)
-    ax.set_xlabel("Inference latency per image  (s, log scale)  →",
-                  color="#B9C1CE", fontsize=10)
-    ax.set_ylabel("Macro F1-noBG  →", color="#B9C1CE", fontsize=10)
-    ax.set_ylim(0.4, 0.85)
-    ax.tick_params(colors="#8A93A3", labelsize=8)
-    for sp in ax.spines.values():
-        sp.set_color("#2A3547")
-    ax.grid(alpha=0.12, color="#3A4557")
-    ax.set_title("Star = viable-region pick (spectral + spatial)",
-                 color="#9AA3B2", fontsize=9)
-    fig.tight_layout()
-    return fig
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-#  Screen 2e — Free Pan/Zoom (bonus, flagged unscripted) — spec §2e
-# ═════════════════════════════════════════════════════════════════════════════
-def screen_freepan() -> None:
-    home_row()
-    top_l, top_r = st.columns([3, 2])
-    with top_l:
-        st.markdown("<div class='bv-screen-title'>Live Mode</div>",
+    with c_title:
+        st.markdown("<div class='bv-screen-title' style='padding-top:8px'>Realtime Demo</div>",
                     unsafe_allow_html=True)
-        st.markdown("<span class='bv-unscripted'>UNSCRIPTED · free exploration</span>",
+    with c_label:
+        st.markdown(image_switch_pill(case_idx, font_size=13), unsafe_allow_html=True)
+    with c_lat:
+        st.markdown(f"<div style='padding-top:5px'>{latency_badge(frame['latency_ms'])}</div>",
                     unsafe_allow_html=True)
+    with c_live:
+        live_color = STATUS_LIVE_RED if playing else STATUS_OFF
+        live_text  = "Live" if playing else "Paused"
+        st.markdown(
+            f"<div style='text-align:right;padding-top:9px;color:{TEXT_HEADING};font-size:13px;"
+            f"font-weight:700'><span style='color:{live_color}'>●</span> {live_text}</div>",
+            unsafe_allow_html=True)
 
-    # Uses the first pixel-model case as the substrate for the pan/zoom sim.
-    case = next((c for c in CASES if MODEL_REGISTRY[c["model"]][1] == "pixel"), CASES[0])
-    img_path = Path(case["image"])
-    ckpt_path = Path(case["checkpoint"])
-    if not img_path.exists() or not ckpt_path.exists():
-        st.error("Live Mode assets missing — check the first pixel-model case.")
-        _freepan_exit()
-        return
+    # ── Primary display: enlarged current viewport, minimap inset top-right ──
+    composed = compose_viewport_frame(frame, rt["rgb_full"], rt["shape"])
+    st.image(composed, use_container_width=True)
 
-    fp = st.session_state.setdefault("freepan", {})
-    if fp.get("img") != str(img_path):
-        cube, gt = load_npz(img_path)
-        cube = normalise(cube)
-        fp.update(img=str(img_path), cube=cube, gt=gt, rgb=make_pseudo_rgb(cube))
-    cube, gt, rgb = fp["cube"], fp["gt"], fp["rgb"]
-    H, W = cube.shape[:2]
-
-    # Coarse drag targets — not thin precision sliders (spec §2e, §7)
-    st.session_state.setdefault("fp_zoom", 160)
-    zoom = st.select_slider("Zoom — viewport size (px)",
-                            options=[80, 120, 160, 220, 300, 400],
-                            key="fp_zoom")
-    zoom = min(zoom, H, W)
-    max_r, max_c = max(1, H - zoom), max(1, W - zoom)
-    # seed pan positions once, then keep them inside the current zoom's range
-    st.session_state.setdefault("fp_r0", max_r // 2)
-    st.session_state.setdefault("fp_c0", max_c // 2)
-    st.session_state["fp_r0"] = min(st.session_state["fp_r0"], max_r)
-    st.session_state["fp_c0"] = min(st.session_state["fp_c0"], max_c)
-    r0 = st.slider("Pan up / down", 0, max_r, step=max(1, zoom // 8), key="fp_r0")
-    c0 = st.slider("Pan left / right", 0, max_c, step=max(1, zoom // 8), key="fp_c0")
-
-    crop = cube[r0:r0 + zoom, c0:c0 + zoom]
-    model = load_model(case["model"], str(ckpt_path))
-    with st.spinner("Inferring…"):
-        t0 = time.perf_counter()
-        pred = infer_pixel(model, crop)
-        ms = (time.perf_counter() - t0) * 1000.0
-
-    st.markdown(f"<div style='text-align:right'>{latency_badge(ms)}</div>",
-                unsafe_allow_html=True)
-
-    big, side = st.columns([7, 3], gap="medium")
-    with big:
-        st.markdown("<div class='bv-panel-label'>Prediction</div>",
+    # ── Control row: Pause/Play | Speed (Slow/Normal/Fast) | Legend ──
+    ctrl_l, ctrl_mid, ctrl_r = st.columns([1.5, 3, 3.2], gap="small")
+    with ctrl_l:
+        with st.container(key="rt_playpause"):
+            if st.button("⏸ Pause" if playing else "▶ Play", key="rt_playpause_btn"):
+                playing = not playing
+                st.session_state.rt_playing = playing
+    with ctrl_mid:
+        st.markdown(f"<div style='color:{TEXT_SECONDARY};font-size:11px;padding-top:6px'>Speed</div>",
                     unsafe_allow_html=True)
-        st.image(make_label_map(pred), use_container_width=True)
-        st.markdown(tissue_legend(), unsafe_allow_html=True)
-    with side:
-        st.markdown("<div class='bv-panel-label'>Minimap</div>",
-                    unsafe_allow_html=True)
-        st.image(make_minimap(rgb, r0, c0, zoom, zoom), use_container_width=True)
-        st.markdown("<div class='bv-panel-label'>Pseudo-RGB</div>",
-                    unsafe_allow_html=True)
-        st.image(rgb[r0:r0 + zoom, c0:c0 + zoom], use_container_width=True)
-        if gt is not None:
-            st.markdown("<div class='bv-panel-label'>Ground truth</div>",
-                        unsafe_allow_html=True)
-            st.image(make_label_map(gt[r0:r0 + zoom, c0:c0 + zoom]),
-                     use_container_width=True)
+        with st.container(key="toggle_speed"):
+            s1, s2, s3 = st.columns(3)
+            for col, label in zip((s1, s2, s3), ("Slow", "Normal", "Fast")):
+                with col:
+                    if st.button(label, key=f"speed_{label}",
+                                 type="primary" if speed == label else "secondary"):
+                        speed = label
+        st.session_state.rt_speed = speed
+    with ctrl_r:
+        st.markdown(tissue_legend_vertical(), unsafe_allow_html=True)
 
-    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-    _, r = st.columns([3, 1])
-    with r:
-        if st.button("Exit Live Mode", key="fp_exit"):
-            _freepan_exit()
-            st.rerun()
+    # ── Progress: plain filled bar, no handle — not a scrubber ──
+    pct = pos / (n_steps - 1) if n_steps > 1 else 0.0
+    st.progress(pct)
+    st.caption(f"Scanning… {pct * 100:.0f}% along path.")
 
-
-def _freepan_exit() -> None:
-    goto(st.session_state.get("freepan_return", "live"))
+    if playing:
+        step, tick_s = SPEED_CONFIG[speed]
+        time.sleep(tick_s)
+        st.session_state[pos_key] = (pos + step) % n_steps
+        st.rerun()
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  Router
 # ═════════════════════════════════════════════════════════════════════════════
 def main() -> None:
-    st.session_state.setdefault("screen", "idle")
-    st.session_state.setdefault("case_idx", 0)
-
+    st.session_state.setdefault("screen", "welcome")
     screen = st.session_state.screen
-    if screen == "idle":
-        screen_idle()
-    elif screen == "cases":
-        screen_cases()
-    elif screen == "live":
-        screen_live()
-    elif screen == "summary":
-        screen_summary()
-    elif screen == "freepan":
-        screen_freepan()
+    if screen == "welcome":
+        screen_welcome()
+    elif screen == "mode":
+        screen_mode()
+    elif screen == "static":
+        screen_static()
+    elif screen == "realtime":
+        screen_realtime()
     else:
-        goto("idle")
+        goto("welcome")
         st.rerun()
 
 
