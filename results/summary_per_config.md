@@ -13,19 +13,14 @@ Median ± population std across folds. All metrics in %.
 | `1dnnfabelo_fl_bal_vpfabelo` | 1D-NN-Fabelo | 1 | FL | 4,936 | 5 | 66.6 ± 9.5 | 70.9 ± 3.8 | 69.9 ± 4.2 | 80.0 ± 2.9 | 58.2 ± 12.3 | 44.9 ± 10.7 | -- |
 | `1dnnfabelo_fl_nobal_vpfabelo` | 1D-NN-Fabelo | 1 | FL | 4,936 | 5 | 66.3 ± 8.6 | 66.2 ± 1.6 | 66.6 ± 1.4 | 73.7 ± 1.9 | 73.7 ± 3.7 | 33.0 ± 3.5 | -- |
 | `1dnnfabelo_ufl_bal_vpfabelo` | 1D-NN-Fabelo | 1 | UFL | 4,936 | 5 | 67.7 ± 9.3 | 68.2 ± 2.6 | 67.4 ± 3.2 | 77.6 ± 1.7 | 59.6 ± 8.7 | 39.7 ± 7.3 | -- |
-| `1dnnfabelo_ufl_nobal_vpfabelo` | 1D-NN-Fabelo | 1 | UFL | 4,936 | 5 | 73.3 ± 9.2 | 81.6 ± 1.4 | 80.9 ± 1.5 | 85.5 ± 0.4 | 61.8 ± 6.5 | 66.8 ± 5.1 | -- |
+| `1dnnfabelo_ufl_nobal_vpfabelo` | 1D-NN-Fabelo | 1 | UFL | 4,936 | 4 | 69.7 ± 11.4 | 81.9 ± 1.3 | 81.3 ± 1.4 | 85.6 ± 0.4 | 66.2 ± 6.8 | 69.0 ± 5.1 | -- |
 | `1dcnn_ce_bal_vpfabelo` | 1D-CNN-Hu | 2 | CE | 76,824 | 5 | 70.3 ± 5.8 | 74.8 ± 1.9 | 73.3 ± 2.0 | 81.5 ± 1.3 | 65.1 ± 7.7 | 55.6 ± 4.4 | -- |
-| `1dcnn_ce_nobal_vpfabelo` | 1D-CNN-Hu | 2 | CE | 76,824 | 5 | 72.1 ± 10.2 | 84.3 ± 0.7 | 82.2 ± 1.1 | 88.2 ± 0.5 | 69.6 ± 6.2 | 71.6 ± 3.9 | -- |
 | `1dcnn_ufl_bal_vpfabelo` | 1D-CNN-Hu | 2 | UFL | 76,824 | 5 | 68.3 ± 5.9 | 73.7 ± 2.6 | 72.8 ± 2.5 | 80.3 ± 1.7 | 70.2 ± 11.3 | 50.4 ± 6.8 | -- |
-| `1dcnn_ufl_nobal_vpfabelo` | 1D-CNN-Hu | 2 | UFL | 76,824 | 5 | 71.7 ± 9.0 | 83.4 ± 1.1 | 81.7 ± 1.3 | 87.6 ± 0.5 | 56.4 ± 6.2 | 70.8 ± 3.8 | -- |
 | `2dcnnfabelo_ce_bal_vpfabelo` | 2D-CNN-Fabelo | 3 | CE | 142,052 | 5 | 70.3 ± 8.9 | 77.6 ± 1.8 | 75.9 ± 1.8 | 83.3 ± 1.1 | 66.5 ± 4.6 | 58.0 ± 6.6 | -- |
 | `2dcnnfabelo_ufl_bal_vpfabelo` | 2D-CNN-Fabelo | 3 | UFL | 142,052 | 5 | 70.4 ± 9.4 | 76.1 ± 1.9 | 75.3 ± 2.3 | 81.8 ± 1.4 | 72.4 ± 8.3 | 55.0 ± 5.0 | -- |
 | `2dcnn_ce_bal_vpfabelo` | 2D-CNN-LeeEtAl | 3 | CE | 296,580 | 5 | 68.9 ± 10.1 | 73.7 ± 3.2 | 73.1 ± 4.8 | 80.8 ± 1.2 | 58.3 ± 15.6 | 48.3 ± 11.7 | -- |
 | `2dcnn_ce_nobal_vpfabelo` | 2D-CNN-LeeEtAl | 3 | CE | 296,580 | 1 | 63.3 ± 0.0 | -- | -- | -- | -- | -- | -- |
 | `2dcnn_ufl_bal_vpfabelo` | 2D-CNN-LeeEtAl | 3 | UFL | 296,580 | 5 | 69.8 ± 9.4 | 75.5 ± 2.5 | 75.4 ± 3.5 | 81.7 ± 0.9 | 56.3 ± 10.0 | 51.8 ± 9.9 | -- |
 | `2dcnnsimple_ce_bal_vpfabelo` | 2D-CNN-Simple | 3 | CE | 19,644 | 5 | 71.2 ± 10.5 | 72.9 ± 4.0 | 71.4 ± 4.1 | 80.5 ± 2.8 | 68.3 ± 6.2 | 43.5 ± 10.7 | -- |
-| `spectralformer_caf_ce_bal_vpfabelo` | SpectralFormer-CAF | 5 | CE | -- | 5 | 72.7 ± 8.3 | 70.7 ± 2.4 | 69.1 ± 2.4 | 78.4 ± 1.8 | 64.1 ± 1.7 | 43.5 ± 5.1 | -- |
-| `spectralformer_vit_ce_bal_vpfabelo` | SpectralFormer-ViT | 5 | CE | -- | 5 | 67.8 ± 10.0 | 70.0 ± 3.0 | 66.8 ± 2.9 | 78.4 ± 2.2 | 55.7 ± 7.5 | 41.9 ± 8.2 | -- |
-| `spectralformer_vit_ufl_bal_vpfabelo` | SpectralFormer-ViT | 5 | UFL | -- | 5 | 66.6 ± 10.1 | 69.5 ± 2.7 | 68.7 ± 2.4 | 77.8 ± 2.1 | 59.5 ± 7.6 | 37.7 ± 6.9 | -- |
 
 **Trained but not test-evaluated:** `2dcnn_ce_nobal_vpfabelo`
